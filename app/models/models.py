@@ -16,6 +16,7 @@ class VerificationCode(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime)
     used = Column(Boolean, default=False)
+    user_id = Column(String, ForeignKey("users.id"))
     user = relationship("User", back_populates="verification_codes")
 
 class User(Base):
@@ -27,7 +28,7 @@ class User(Base):
     bio_info = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    verification_codes = relationship("VerificationCode", back_populates="user")
+    verification_codes = relationship("VerificationCode", back_populates="user", cascade="all, delete-orphan")
     book_states = relationship("UserBookState", back_populates="user")
     bookmarks = relationship("Bookmark", back_populates="user")
 

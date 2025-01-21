@@ -57,7 +57,7 @@ export function Auth() {
         login(email)
       } else {
         const data = await response.json()
-        setError(data.detail || 'Invalid verification code')
+        setError(data.detail || 'Verification failed')
       }
     } catch (err) {
       setError('Failed to verify code')

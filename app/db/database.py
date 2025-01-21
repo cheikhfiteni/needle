@@ -1,10 +1,12 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select, and_
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from contextlib import contextmanager, asynccontextmanager
 from app.config import DATABASE_URL
 from typing import Optional
 from uuid import UUID
+from app.models.models import User, Book, UserBookState, VerificationCode
+from datetime import datetime
 
 # Sync SQLAlchemy engine
 engine = create_engine(DATABASE_URL, echo=True)
@@ -36,8 +38,8 @@ async def get_async_db() -> AsyncSession:
         finally:
             await session.close()
 
-async def get_user_by_email(email: str) -> Optional[dict]:
-    async with get_async_db() as session:
+async def get_user_by_email(email: str) -> Optional[User]:
+    async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(User).where(User.email == email)
         )
@@ -59,5 +61,31 @@ async def get_user_book_state(user_id: UUID, book_id: UUID) -> Optional[dict]:
                     UserBookState.book_id == book_id
                 )
             )
+        )
+        return result.scalar_one_or_none()
+
+async def create_verification_code(email: str, code: str, expires_at: datetime) -> VerificationCode:
+    async with AsyncSessionLocal() as session:
+        verification_code = VerificationCode(
+            email=email,
+            code=code,
+            expires_at=expires_at
+        )
+        session.add(verification_code)
+        await session.commit()
+        await session.refresh(verification_code)
+        return verification_code
+
+async def get_valid_verification_code(email: str, code: str) -> Optional[VerificationCode]:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(VerificationCode).where(
+                and_(
+                    VerificationCode.email == email,
+                    VerificationCode.code == code,
+                    VerificationCode.used == False,
+                    VerificationCode.expires_at > datetime.utcnow()
+                )
+            ).order_by(VerificationCode.created_at.desc())
         )
         return result.scalar_one_or_none()

@@ -10,7 +10,7 @@ import jwt
 import secrets
 from email.message import EmailMessage
 import aiosmtplib
-from app.db.database import get_async_db
+from app.db.database import get_async_db, create_verification_code, get_valid_verification_code, get_user_by_email
 from fastapi.responses import JSONResponse
 
 from dotenv import load_dotenv
@@ -87,57 +87,36 @@ async def request_verification_code(email_data: EmailVerification, background_ta
     code = generate_verification_code()
     expires_at = datetime.utcnow() + timedelta(minutes=EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES)
     
-    async with get_async_db() as db:
-        query = VerificationCode.__table__.insert().values(
-            email=email_data.email,
-            code=code,
-            expires_at=expires_at
-        )
-        await db.execute(query)
-        await db.commit()
-
-        # Send email in background
+    try:
+        await create_verification_code(email_data.email, code, expires_at)
         background_tasks.add_task(send_verification_email, email_data.email, code)
-        
         return {"message": "Verification code sent"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to create verification code")
 
 @router.post("/verify-code", response_model=Token)
 async def verify_code(verify_data: VerifyCode):
-    query = select(VerificationCode).where(
-        VerificationCode.email == verify_data.email,
-        VerificationCode.code == verify_data.code,
-        VerificationCode.used == False,
-        VerificationCode.expires_at > datetime.utcnow()
-    ).order_by(VerificationCode.created_at.desc()).limit(1)
+    verification = await get_valid_verification_code(verify_data.email, verify_data.code)
+    
+    if not verification:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired verification code"
+        )
     
     async with get_async_db() as db:
-        result = await db.execute(query)
-        row = result.scalar_one_or_none()
-    
-        if not row:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid or expired verification code"
-            )
-        
         # Mark code as used
-        await db.execute(
-            update(VerificationCode)
-            .where(VerificationCode.id == row.id)
-            .values(used=True)
-        )
-        await db.commit()
+        verification.used = True
+        db.add(verification)
         
         # Create or get user
-        user_query = select(User).where(User.email == verify_data.email)
-        result = await db.execute(user_query)
-        user = result.scalar_one_or_none()
-        
+        user = await get_user_by_email(verify_data.email)
         if not user:
-            new_user = User(email=verify_data.email, is_active=True)
-            db.add(new_user)
-            await db.commit()
+            user = User(email=verify_data.email)
+            db.add(user)
         
+        await db.commit()
+    
     # Create access token
     access_token = create_access_token(
         data={"sub": verify_data.email},
@@ -145,14 +124,12 @@ async def verify_code(verify_data: VerifyCode):
     )
     
     response = JSONResponse({"status": "authenticated"})
-    
-    # Set secure cookie
     response.set_cookie(
         key="session_token",
         value=access_token,
-        httponly=True,        # Cannot be accessed by JavaScript
-        secure=True,         # Only sent over HTTPS
-        samesite="strict",   # CSRF protection
+        httponly=True,
+        secure=True,
+        samesite="strict",
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
     )
     

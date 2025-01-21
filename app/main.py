@@ -4,6 +4,8 @@ from app.services.authentication import ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY,
 from app.models.models import Book, User
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.config import FRONTEND_URL
+
 from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel
 
@@ -50,7 +52,7 @@ app.include_router(auth_router, prefix="/auth", tags=["authentication"])
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[FRONTEND_URL],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
