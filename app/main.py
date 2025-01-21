@@ -1,8 +1,10 @@
-from fastapi import Depends, FastAPI, File, UploadFile, WebSocket
+from fastapi import Depends, FastAPI, File, UploadFile, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.services.authentication import ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, router as auth_router, get_current_user
 from app.models.models import Book, User
 from starlette.middleware.sessions import SessionMiddleware
+from pathlib import Path
+from app.core.upload_processing import process_pdf_upload, save_uploaded_file
 
 from app.config import FRONTEND_URL
 
@@ -64,6 +66,9 @@ app.add_middleware(
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
 )
 
+# Create upload directory constant
+UPLOAD_DIR = Path("uploads")
+
 @app.get("/")
 async def root():
     return {"message": "Hello World from Needle, the interactive storyteller."}
@@ -77,7 +82,20 @@ async def upload_book(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user)
 ):
-    pass
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+    
+    try:
+        content = await file.read()
+        file_path = save_uploaded_file(content, file.filename, UPLOAD_DIR)
+        metadata = process_pdf_upload(file_path)
+        
+        # TODO: Save book metadata to database
+        # This would involve creating a new Book record and associating it with the user
+        
+        return metadata
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/books/list", response_model=List[BookMetadata])
 async def list_books(

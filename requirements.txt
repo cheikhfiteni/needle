@@ -17,6 +17,7 @@ pycparser==2.22
 pydantic==2.10.5
 pydantic-core==2.27.2
 pyjwt==2.10.1
+pypdf2==3.0.1
 python-dotenv==1.0.1
 python-multipart==0.0.20
 sniffio==1.3.1

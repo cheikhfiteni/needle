@@ -3,9 +3,9 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from contextlib import contextmanager, asynccontextmanager
 from app.config import DATABASE_URL
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
-from app.models.models import User, Book, UserBookState, VerificationCode
+from app.models.models import Page, User, Book, UserBookState, VerificationCode
 from datetime import datetime
 
 # Sync SQLAlchemy engine
@@ -89,3 +89,49 @@ async def get_valid_verification_code(email: str, code: str) -> Optional[Verific
             ).order_by(VerificationCode.created_at.desc())
         )
         return result.scalar_one_or_none()
+
+async def create_book(reference_string: str, file_blob: bytes, total_pages: int, table_of_contents: dict) -> Book:
+    async with AsyncSessionLocal() as session:
+        book = Book(
+            reference_string=reference_string,
+            file_blob=file_blob,
+            total_pages=total_pages,
+            table_of_contents=table_of_contents
+        )
+        session.add(book)
+        await session.commit()
+        await session.refresh(book)
+        return book
+
+async def get_pages_from_book(book_id: str, start_page: int, num_pages: int) -> List[Page]:
+    async with AsyncSessionLocal() as session:
+        # Get book to check total pages
+        book_result = await session.execute(
+            select(Book).where(Book.id == book_id)
+        )
+        book = book_result.scalar_one_or_none()
+        
+        if not book:
+            return []
+            
+        # Adjust num_pages if it would exceed book length
+        pages_remaining = book.total_pages - start_page + 1
+        pages_to_fetch = min(num_pages, pages_remaining)
+        
+        if pages_to_fetch <= 0:
+            return []
+            
+        result = await session.execute(
+            select(Page)
+            .where(
+                and_(
+                    Page.book_id == book_id,
+                    Page.page_number >= start_page,
+                    Page.page_number < start_page + pages_to_fetch
+                )
+            )
+            .order_by(Page.page_number)
+        )
+        
+        return result.scalars().all()
+
