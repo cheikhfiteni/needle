@@ -3,6 +3,37 @@ import uuid
 from PyPDF2 import PdfReader
 from typing import Dict
 
+from app.db.vector_database import get_vector_db, get_embedder
+
+def _create_table_of_contents(reader: PdfReader) -> Dict:
+    toc = {}
+    if reader.outline:
+        for item in reader.outline:
+            if isinstance(item, dict) and '/Page' in item:
+                toc[item.get('/Title', '')] = {
+                    'page': item['/Page'],
+                    'paragraph': 0,
+                    'sentence': 0,
+                    'timestamp': 0.0
+                }
+    return toc
+
+def _break_into_pages(reader: PdfReader) -> List[str]:
+    pages = []
+    for page in reader.pages:
+        pages.append(page.extract_text())
+    return pages
+
+def _embed_pages(pages: List[str]) -> List[np.ndarray]:
+    embedder = get_embedder()
+    return [embedder.embed_text(page) for page in pages]    
+
+
+def _save_pages(pages: List[str]) -> List[str]:
+    vector_db = get_vector_db()
+    return [vector_db.add_page(page) for page in pages]
+
+
 def process_pdf_upload(file_path: Path) -> Dict:
     """
     Process an uploaded PDF file and extract its metadata.

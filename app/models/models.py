@@ -1,9 +1,21 @@
 from sqlalchemy import Boolean, create_engine, Column, Integer, String, DateTime, ForeignKey, Float, JSON, LargeBinary
+from sqlalchemy.dialects.postgresql import TSVECTOR
+import sqlalchemy as sa
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from app.config import DATABASE_URL
 from datetime import datetime
 import uuid
+from sqlalchemy import event
+from sqlalchemy.schema import DDL
+
+# Try to import pgvector, but don't fail if not available
+try:
+    from pgvector.sqlalchemy import Vector
+    HAS_PGVECTOR = True
+except ImportError:
+    HAS_PGVECTOR = False
+    Vector = lambda dim: sa.Column(JSON)  # Fallback to JSON type
 
 Base = declarative_base()
 
@@ -54,9 +66,18 @@ class Page(Base):
     chapter = Column(String)
     paragraphed_text = Column(String, nullable=False)
     sentenced_text = Column(String, nullable=False)
-    audio_chunks = Column(JSON)  # List of audio chunk metadata
+    audio_chunks = Column(JSON)
+    
+    # Vector search columns - will store as JSON if pgvector not available
+    embedding = Vector(1536)  # OpenAI's embedding dimension
+    text_search = Column(TSVECTOR)
+    chunk_embeddings = Column(JSON)  # Store chunk-level embeddings
     
     book = relationship("Book", back_populates="pages")
+
+    __table_args__ = {
+        'postgresql_with_vectors': HAS_PGVECTOR
+    }
 
 class UserBookState(Base):
     __tablename__ = "user_book_states"
@@ -95,6 +116,13 @@ class Question(Base):
     position = Column(JSON)  # Position when question was asked
     created_at = Column(DateTime, default=datetime.utcnow)
 
-# Initialize database
 engine = create_engine(DATABASE_URL)
+
+# Actually allows us to use pgvector
+event.listen(
+    Base.metadata,
+    'before_create',
+    DDL('CREATE EXTENSION IF NOT EXISTS vector;')
+)
+
 Base.metadata.create_all(engine)
