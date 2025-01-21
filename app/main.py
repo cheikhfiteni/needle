@@ -62,14 +62,6 @@ app.add_middleware(
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
 )
 
-# Dependency
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 @app.get("/")
 async def root():
     return {"message": "Hello World from Needle, the interactive storyteller."}
