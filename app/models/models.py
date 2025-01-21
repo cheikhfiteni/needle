@@ -1,21 +1,33 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Float, JSON, LargeBinary
+from sqlalchemy import Boolean, create_engine, Column, Integer, String, DateTime, ForeignKey, Float, JSON, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from config import DATABASE_URL
+from app.config import DATABASE_URL
 from datetime import datetime
 import uuid
 
 Base = declarative_base()
+
+class VerificationCode(Base):
+    __tablename__ = "verification_codes"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String, index=True)
+    code = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime)
+    used = Column(Boolean, default=False)
+    user = relationship("User", back_populates="verification_codes")
 
 class User(Base):
     __tablename__ = "users"
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     email = Column(String, unique=True, nullable=False)
-    name = Column(String, nullable=False)
+    name = Column(String, nullable=True)
     bio_info = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)
     
+    verification_codes = relationship("VerificationCode", back_populates="user")
     book_states = relationship("UserBookState", back_populates="user")
     bookmarks = relationship("Bookmark", back_populates="user")
 
