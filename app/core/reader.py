@@ -110,7 +110,7 @@ class OpenAISynthTranscriber(SynthTranscriber):
 
     def _break_into_sentences(self, text: str) -> list[str]:
         text = text.replace('...', '###ELLIPSIS###')
-        
+
         sentences = re.split(r'([.!?]+)\s+', text)
         # Recombine delimiter with sentence: ['Hi', '!', 'What', '!?', 'Name', '.'] -> ['Hi!', 'What!?', 'Name.']
         sentences = [''.join(sentences[i:i+2]) for i in range(0, len(sentences)-1, 2)]
@@ -120,17 +120,8 @@ class OpenAISynthTranscriber(SynthTranscriber):
 
         sentences = [s.replace('###ELLIPSIS###', '...') for s in sentences]
         return sentences
-
-    def _convert_page_to_buffered_text(self, page: Page) -> list[str]:
-        def add_to_buffer(text: str, separator: str = " ") -> None:
-            nonlocal current_buffer, sized_buffers
-            if len(current_buffer + text) <= self.MAX_CHARS:
-                current_buffer += text + separator
-            else:
-                if current_buffer:
-                    sized_buffers.append(current_buffer.strip())
-                current_buffer = text + separator
-
+    
+    def _convert_paragraph_text_to_buffers(self, paragraphed_text: list[str]) -> list[str]:
         def flush_buffer() -> None:
             nonlocal current_buffer, sized_buffers
             if current_buffer.strip():
@@ -139,57 +130,50 @@ class OpenAISynthTranscriber(SynthTranscriber):
 
         sized_buffers = []
         current_buffer = ""
-        unprocessed_chunks = page.paragraphed_text[::-1]
-
-        boundary_splits = [
-        [' <p> '],           # Paragraph boundaries
-        ['. ', '? ', '! '],  # Sentence boundaries
-        [' ']                # Word boundaries
-        ]
+        unprocessed_chunks = paragraphed_text
+        print("\033[95mTotal paragraphs:", len(paragraphed_text))
+        for i, p in enumerate(paragraphed_text):
+            print(f"Paragraph {i} length:", len(p), "\033[0m")
 
         # Process paragraphs
         while unprocessed_chunks:
-            chunk = unprocessed_chunks.pop(0)
+            # At this point, optimistically processing paragraphs
+            chunk = unprocessed_chunks.pop(0) 
             if len(current_buffer + chunk) <= self.MAX_CHARS:
                 current_buffer += chunk + "\n"
             else:
-                # break into sentences
-                # Split on any sentence boundary
-                sentences = []
-                current_chunk = chunk
-                for boundary in boundary_splits[1]:
-                    if boundary in current_chunk:
-                        parts = current_chunk.split(boundary)
-                        for i, part in enumerate(parts[:-1]):
-                            sentences.append(part + boundary)
-                        current_chunk = parts[-1]
-                if current_chunk:
-                    sentences.append(current_chunk)
-                
-                # Process sentences and re-add remainder to unprocessed chunks
-                added_any = False
-                for i, sentence in enumerate(sentences):
+                # Break into sentences
+                sentences = self._break_into_sentences(current_buffer)
+                while sentences:
+                    sentence = sentences.pop(0)
                     if len(current_buffer + sentence) <= self.MAX_CHARS:
-                        current_buffer += sentence
-                        added_any = True
+                        current_buffer += sentence + "\n"
                     else:
-                        if added_any:
-                            remainder = "".join(sentences[i:])
-                            unprocessed_chunks.insert(0, remainder)
+                        sentences.insert(0, sentence)
                         break
-                for sentence in sentences:
-                    if len(current_buffer + sentence) <= self.MAX_CHARS:
-                        current_buffer += sentence + " "
-                    else:
-                        break
+                # process the rest of the sentence as words:
+                while sentences:
+                    words = sentences.pop(0).split(' ')
+                    while words:
+                        word = words.pop(0)
+                        if len(current_buffer + word) <= self.MAX_CHARS:
+                            current_buffer += word + " "
+                        else:
+                            words.insert(0, word)
+                            break
+                    sentences.insert(0, " ".join(words))
+                    remainder = " ".join(sentences)
+                    unprocessed_chunks.insert(0, remainder)
 
-        # Process any remaining sentences
-        if not sized_buffers:
-            for sentence in page.sentenced_text.split('\n'):
-                add_to_buffer(sentence, " ")
+            # if len(current_buffer.strip()) >= self.MAX_CHARS: flush_buffer()
             flush_buffer()
 
+        flush_buffer() # clear remaining buffer
         return sized_buffers if sized_buffers else [""]
+
+    def _convert_page_to_buffered_text(self, page: Page) -> list[str]:
+        unprocessed_chunks = page.paragraphed_text[::-1]
+        return self._convert_paragraph_text_to_buffers(unprocessed_chunks)
 
     def _convert_text_to_audio(self, text: str, voice: str = "alloy") -> bytes:
         response = self.client.audio.speech.create(

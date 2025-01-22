@@ -252,15 +252,21 @@ async def synthesize_text():
                         Here an oink, there an oink
                         Everywhere an oink-oink
                         Old MacDonald had a farm
-                        Ee i ee i o"""
-    FINAL_TEXT = OLD_MACDONALD + OLD_MACDONALD + OLD_MACDONALD
+                        Ee i ee i o \n\n"""
+    FINAL_TEXT = OLD_MACDONALD + OLD_MACDONALD + OLD_MACDONALD + OLD_MACDONALD + OLD_MACDONALD + OLD_MACDONALD
     chars = len(FINAL_TEXT)
     print(f"chars: {chars}")
-    start = time.time()
-    content_bytes = transcriber._convert_text_to_audio(FINAL_TEXT)
-    end = time.time()
-    print(f"time: {end - start}")
-    return Response(
-        content=content_bytes,
-        media_type="audio/mpeg"
-    )
+    buffers = transcriber._convert_paragraph_text_to_buffers(FINAL_TEXT.split("\n\n"))
+    print("buffers", buffers)
+    sum_len = 0
+    print("len buffers", len(buffers))
+    for buffer in buffers:
+        print("len buffer", len(buffer))
+        sum_len += len(buffer)
+    # start = time.time()
+    # for buffer in buffers:
+    #     content_bytes = transcriber._convert_text_to_audio(buffer)
+    # end = time.time()
+    # print(f"time: {end - start}")
+    print("sum_len", sum_len)
+    return {"status": "ok", "sum_len": sum_len}
