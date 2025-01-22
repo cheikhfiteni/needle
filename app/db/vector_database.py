@@ -7,7 +7,7 @@ from openai import OpenAI
 from app.config import DATABASE_URL, OPENAI_API_KEY
 from app.models.models import Page
 import nltk
-from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.tokenize import sent_tokenize
 from contextlib import contextmanager
 
 nltk.download('punkt_tab')

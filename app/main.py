@@ -5,6 +5,7 @@ from app.models.models import Book, User
 from starlette.middleware.sessions import SessionMiddleware
 from pathlib import Path
 from app.core.upload_processing import process_pdf_upload, save_uploaded_file
+from app.db.database import get_book_with_state, update_reading_position, get_user_books
 
 from app.config import FRONTEND_URL
 
@@ -20,7 +21,7 @@ class ReadingPosition(BaseModel):
 class ChapterPosition(BaseModel):
     title: str
     page_number: int
-    timestamp: Optional[float]
+    timestamp: Optional[float] = None
 
 class BookMetadata(BaseModel):
     reference_string: str
@@ -103,22 +104,44 @@ async def upload_book(
 async def list_books(
     current_user: User = Depends(get_current_user)
 ):
-    pass
+    books = await get_user_books(current_user.id)
+    return [
+        BookMetadata(
+            reference_string=book.reference_string,
+            id=str(book.id),
+            total_pages=book.total_pages,
+            table_of_contents=book.table_of_contents
+        ) for book in books
+    ]
 
 @app.get("/api/books/{book_id}", response_model=BookMetadata)
 async def get_book(
     book_id: str,
     current_user: User = Depends(get_current_user)
 ):
-    pass
+    result = await get_book_with_state(book_id, current_user.id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Book not found")
+    book, _ = result
+    return BookMetadata(
+        reference_string=book.reference_string,
+        id=str(book.id),
+        total_pages=book.total_pages,
+        table_of_contents=book.table_of_contents
+    )
 
 @app.get("/api/books/{book_id}/position", response_model=ReadingPosition)
 async def get_reading_position(
     book_id: str,
-    user_id: str,
     current_user: User = Depends(get_current_user)
 ):
-    pass
+    result = await get_book_with_state(book_id, current_user.id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Book not found")
+    _, state = result
+    if not state.cursor_position:
+        return ReadingPosition(page=1, paragraph=0, sentence=0, timestamp=0.0)
+    return ReadingPosition(**state.cursor_position)
 
 @app.post("/api/books/{book_id}/position")
 async def set_reading_position(
@@ -126,7 +149,10 @@ async def set_reading_position(
     position: ReadingPosition,
     current_user: User = Depends(get_current_user)
 ):
-    pass
+    state = await update_reading_position(current_user.id, book_id, position.dict())
+    if not state:
+        raise HTTPException(status_code=404, detail="Book not found")
+    return {"status": "success"}
 
 # potentially don't stream, but send buffer and let the client handle pacing
 # polling for the next chunk when the current one is done. Better for latency?

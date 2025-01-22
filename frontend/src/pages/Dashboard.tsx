@@ -1,17 +1,16 @@
 import { useAuth } from '../contexts/AuthContext'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { API_BASE_URL } from '../services/config'
 
 type BookMetadata = {
-  book_id: string
+  id: string
   reference_string: string
   total_pages: number
-  table_of_contents: Record<number, {
+  table_of_contents: Record<string, {
     title: string
     page_number: number
     timestamp?: number
   }>
-  user_book_state_id: string
 }
 
 export function Dashboard() {
@@ -19,6 +18,49 @@ export function Dashboard() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [books, setBooks] = useState<BookMetadata[]>([])
+  const [selectedBook, setSelectedBook] = useState<BookMetadata | null>(null)
+  const [currentPosition, setCurrentPosition] = useState<{
+    page: number;
+    paragraph: number;
+    sentence: number;
+    timestamp: number;
+  } | null>(null)
+
+  useEffect(() => {
+    const fetchBooks = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/books/list`, {
+          credentials: 'include'
+        })
+        if (response.ok) {
+          const data = await response.json()
+          setBooks(data)
+        }
+      } catch (error) {
+        console.error('Error fetching books:', error)
+      }
+    }
+
+    fetchBooks()
+    const interval = setInterval(fetchBooks, 120000) // Refresh every 2 minutes
+    return () => clearInterval(interval)
+  }, [])
+
+  const handleBookSelect = async (book: BookMetadata) => {
+    setSelectedBook(book)
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/books/${book.id}/position`, {
+        credentials: 'include'
+      })
+      if (response.ok) {
+        const position = await response.json()
+        setCurrentPosition(position)
+      }
+    } catch (error) {
+      console.error('Error fetching book position:', error)
+    }
+  }
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -42,7 +84,7 @@ export function Dashboard() {
       const data: BookMetadata = await response.json()
       if (!response.ok) {
         console.error('Upload error:', data)
-        throw new Error(data.book_id || 'Upload failed')
+        throw new Error(data.id || 'Upload failed')
       }
       console.log('Upload successful:', data)
       setSelectedFile(pendingFile)
@@ -144,6 +186,31 @@ export function Dashboard() {
             >
               Interrupt
             </button>
+          </div>
+        </section>
+
+        <section className="mb-8 p-6 bg-white rounded-lg shadow">
+          <h2 className="text-xl font-semibold mb-4">Your Books</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {books.map((book) => (
+              <div
+                key={book.id}
+                className={`p-4 rounded-lg border cursor-pointer transition-colors ${
+                  selectedBook?.id === book.id
+                    ? 'border-violet-500 bg-violet-50'
+                    : 'border-gray-200 hover:border-violet-300'
+                }`}
+                onClick={() => handleBookSelect(book)}
+              >
+                <h3 className="font-medium mb-2">{book.reference_string}</h3>
+                <p className="text-sm text-gray-600">Pages: {book.total_pages}</p>
+                {selectedBook?.id === book.id && currentPosition && (
+                  <p className="text-sm text-violet-600 mt-2">
+                    Current: Page {currentPosition.page}
+                  </p>
+                )}
+              </div>
+            ))}
           </div>
         </section>
       </main>

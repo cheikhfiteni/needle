@@ -175,3 +175,44 @@ async def create_page(
         await session.refresh(page)
         return page
 
+async def get_user_books(user_id: str) -> List[Book]:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Book, UserBookState)
+            .join(UserBookState, and_(
+                UserBookState.book_id == Book.id,
+                UserBookState.user_id == user_id
+            ))
+        )
+        return [row[0] for row in result.all()]
+
+async def get_book_with_state(book_id: str, user_id: str) -> Optional[tuple[Book, UserBookState]]:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Book, UserBookState)
+            .join(UserBookState, and_(
+                UserBookState.book_id == Book.id,
+                UserBookState.user_id == user_id
+            ))
+            .where(Book.id == book_id)
+        )
+        row = result.first()
+        return row if row else None
+
+async def update_reading_position(user_id: str, book_id: str, position: dict) -> Optional[UserBookState]:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(UserBookState).where(
+                and_(
+                    UserBookState.user_id == user_id,
+                    UserBookState.book_id == book_id
+                )
+            )
+        )
+        state = result.scalar_one_or_none()
+        if state:
+            state.cursor_position = position
+            await session.commit()
+            await session.refresh(state)
+        return state
+
