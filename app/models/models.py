@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, create_engine, Column, Integer, String, DateTime, ForeignKey, Float, JSON, LargeBinary
+from sqlalchemy import Boolean, create_engine, Column, Integer, String, DateTime, ForeignKey, Float, JSON, LargeBinary, ARRAY
 from sqlalchemy.dialects.postgresql import TSVECTOR
 import sqlalchemy as sa
 from sqlalchemy.ext.declarative import declarative_base
@@ -56,6 +56,7 @@ class Book(Base):
     
     pages = relationship("Page", back_populates="book")
     book_states = relationship("UserBookState", back_populates="book")
+    audio_files = relationship("AudioChunk", back_populates="book")
 
 class Page(Base):
     __tablename__ = "pages"
@@ -64,9 +65,11 @@ class Page(Base):
     book_id = Column(String, ForeignKey("books.id"))
     page_number = Column(Integer, nullable=False)
     chapter = Column(String)
-    paragraphed_text = Column(String, nullable=False)
-    sentenced_text = Column(String, nullable=False)
+    paragraphed_text = Column(ARRAY(String), nullable=False)  # Array of paragraphs
+    sentenced_text = Column(ARRAY(String), nullable=False)    # Array of sentences
     audio_chunks = Column(JSON)
+    audio_timestamp = Column(Float, nullable=True)  
+    audio_duration = Column(Float, nullable=True)   
     
     # Vector search columns - will store as JSON if pgvector not available
     embedding = Vector(1536)  # OpenAI's embedding dimension
@@ -111,6 +114,24 @@ class Question(Base):
     answer_text = Column(String)
     position = Column(JSON)  # Position when question was asked
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class AudioChunk(Base):
+    __tablename__ = "audio_chunks"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    book_id = Column(String, ForeignKey("books.id"))
+    sequence_number = Column(Integer, nullable=False)
+    start_page = Column(Integer, nullable=False)
+    end_page = Column(Integer, nullable=False)
+    start_timestamp = Column(Float, nullable=False)
+    end_timestamp = Column(Float, nullable=False)
+    audio_blob = Column(LargeBinary)  # For direct DB storage
+    
+    book = relationship("Book", back_populates="audio_files")
+
+    __table_args__ = (
+        sa.Index('idx_book_timestamps', 'book_id', 'start_timestamp', 'end_timestamp'),
+    )
 
 engine = create_engine(DATABASE_URL)
 

@@ -122,8 +122,8 @@ async def process_pdf_upload(file_path: Path, user_id: str) -> Dict:
         await create_page(
             book_id=book.id,
             page_number=page_num,
-            paragraphed_text='\n\n'.join(chunks['paragraphs']),
-            sentenced_text='\n'.join(chunks['sentences']),
+            paragraphed_text=chunks['paragraphs'],
+            sentenced_text=chunks['sentences'],
             embedding=embedding,
             chunk_embeddings=None  # Optional, can be updated later if needed
         )
