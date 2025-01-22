@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import os
+import re
 from openai import OpenAI
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -107,36 +108,88 @@ class OpenAISynthTranscriber(SynthTranscriber):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.MAX_CHARS = 4096
 
+    def _break_into_sentences(self, text: str) -> list[str]:
+        text = text.replace('...', '###ELLIPSIS###')
+        
+        sentences = re.split(r'([.!?]+)\s+', text)
+        # Recombine delimiter with sentence: ['Hi', '!', 'What', '!?', 'Name', '.'] -> ['Hi!', 'What!?', 'Name.']
+        sentences = [''.join(sentences[i:i+2]) for i in range(0, len(sentences)-1, 2)]
+        # If the last sentence doesn't end with a period, add one
+        if sentences and sentences[-1][-1] not in '.!?':
+            sentences[-1] = sentences[-1] + '.'
+
+        sentences = [s.replace('###ELLIPSIS###', '...') for s in sentences]
+        return sentences
+
     def _convert_page_to_buffered_text(self, page: Page) -> list[str]:
         def add_to_buffer(text: str, separator: str = " ") -> None:
-            nonlocal current_buffer, buffers
+            nonlocal current_buffer, sized_buffers
             if len(current_buffer + text) <= self.MAX_CHARS:
                 current_buffer += text + separator
             else:
                 if current_buffer:
-                    buffers.append(current_buffer.strip())
+                    sized_buffers.append(current_buffer.strip())
                 current_buffer = text + separator
 
         def flush_buffer() -> None:
-            nonlocal current_buffer, buffers
-            if current_buffer:
-                buffers.append(current_buffer.strip())
+            nonlocal current_buffer, sized_buffers
+            if current_buffer.strip():
+                sized_buffers.append(current_buffer.strip())
                 current_buffer = ""
 
-        buffers = []
+        sized_buffers = []
         current_buffer = ""
+        unprocessed_chunks = page.paragraphed_text[::-1]
+
+        boundary_splits = [
+        [' <p> '],           # Paragraph boundaries
+        ['. ', '? ', '! '],  # Sentence boundaries
+        [' ']                # Word boundaries
+        ]
 
         # Process paragraphs
-        for paragraph in page.paragraphed_text.split('\n'):
-            add_to_buffer(paragraph, "\n")
+        while unprocessed_chunks:
+            chunk = unprocessed_chunks.pop(0)
+            if len(current_buffer + chunk) <= self.MAX_CHARS:
+                current_buffer += chunk + "\n"
+            else:
+                # break into sentences
+                # Split on any sentence boundary
+                sentences = []
+                current_chunk = chunk
+                for boundary in boundary_splits[1]:
+                    if boundary in current_chunk:
+                        parts = current_chunk.split(boundary)
+                        for i, part in enumerate(parts[:-1]):
+                            sentences.append(part + boundary)
+                        current_chunk = parts[-1]
+                if current_chunk:
+                    sentences.append(current_chunk)
+                
+                # Process sentences and re-add remainder to unprocessed chunks
+                added_any = False
+                for i, sentence in enumerate(sentences):
+                    if len(current_buffer + sentence) <= self.MAX_CHARS:
+                        current_buffer += sentence
+                        added_any = True
+                    else:
+                        if added_any:
+                            remainder = "".join(sentences[i:])
+                            unprocessed_chunks.insert(0, remainder)
+                        break
+                for sentence in sentences:
+                    if len(current_buffer + sentence) <= self.MAX_CHARS:
+                        current_buffer += sentence + " "
+                    else:
+                        break
 
         # Process any remaining sentences
-        if not buffers:
+        if not sized_buffers:
             for sentence in page.sentenced_text.split('\n'):
                 add_to_buffer(sentence, " ")
             flush_buffer()
 
-        return buffers if buffers else [""]
+        return sized_buffers if sized_buffers else [""]
 
     def _convert_text_to_audio(self, text: str, voice: str = "alloy") -> bytes:
         response = self.client.audio.speech.create(
