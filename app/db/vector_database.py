@@ -4,11 +4,13 @@ import numpy as np
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import Session
 from openai import OpenAI
-from app.config import DATABASE_URL
+from app.config import DATABASE_URL, OPENAI_API_KEY
 from app.models.models import Page
+import nltk
 from nltk.tokenize import sent_tokenize, word_tokenize
 from contextlib import contextmanager
 
+nltk.download('punkt_tab')
 class TextEmbedder(ABC):
     @abstractmethod
     def embed_text(self, text: str) -> np.ndarray:
@@ -32,7 +34,7 @@ class VectorDatabase(ABC):
 # Either creating our own service or using managed endpoint. Multilanguage support will also be needed.
 class OpenAIEmbedder(TextEmbedder):
     def __init__(self, model="text-embedding-3-small"):
-        self.client = OpenAI()
+        self.client = OpenAI(api_key=OPENAI_API_KEY)
         self.model = model
         
     def embed_text(self, text: str) -> np.ndarray:
@@ -40,6 +42,9 @@ class OpenAIEmbedder(TextEmbedder):
             model=self.model,
             input=text
         )
+        print(text)
+        print(response.data[0].embedding)
+        print(len(response.data[0].embedding))
         return np.array(response.data[0].embedding)
 
     def chunk_text(self, text: str, method: str = "sentences", **kwargs) -> List[str]:
@@ -47,7 +52,7 @@ class OpenAIEmbedder(TextEmbedder):
             return self._chunk_by_sentences(text, **kwargs)
         elif method == "words":
             return self._chunk_by_words(text, **kwargs)
-        return self._chunk_semantic(text)
+        return self._chunk_by_paragraph(text)
 
     def _chunk_by_sentences(self, text: str, window_size: int = 3) -> List[str]:
         sentences = sent_tokenize(text)
@@ -59,17 +64,18 @@ class OpenAIEmbedder(TextEmbedder):
         return chunks
 
     def _chunk_by_words(self, text: str, chunk_size: int = 500, overlap: int = 100) -> List[str]:
-        words = word_tokenize(text)
+        words = text.split()
         chunks = []
         
         for i in range(0, len(words), chunk_size - overlap):
             chunk = " ".join(words[i:i + chunk_size])
-            chunks.append(chunk)
+            if chunk:
+                chunks.append(chunk)
         return chunks
 
-    def _chunk_semantic(self, text: str) -> List[str]:
+    def _chunk_by_paragraph(self, text: str) -> List[str]:
         paragraphs = text.split('\n\n')
-        return [p for p in paragraphs if p.strip()]
+        return [p.strip() for p in paragraphs if p.strip()]
 
 
 class PGVectorDB(VectorDatabase):

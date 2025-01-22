@@ -51,7 +51,7 @@ class Book(Base):
     reference_string = Column(String, nullable=False)
     file_blob = Column(LargeBinary)
     total_pages = Column(Integer, nullable=False)
-    table_of_contents = Column(JSON)  # Dictionary of chapter -> page range
+    table_of_contents = Column(JSON)  # Dictionary of chapter -> page range, timestamp
     created_at = Column(DateTime, default=datetime.utcnow)
     
     pages = relationship("Page", back_populates="book")
@@ -75,10 +75,6 @@ class Page(Base):
     
     book = relationship("Book", back_populates="pages")
 
-    __table_args__ = {
-        'postgresql_with_vectors': HAS_PGVECTOR
-    }
-
 class UserBookState(Base):
     __tablename__ = "user_book_states"
     
@@ -86,7 +82,7 @@ class UserBookState(Base):
     user_id = Column(String, ForeignKey("users.id"))
     book_id = Column(String, ForeignKey("books.id"))
     cursor_position = Column(JSON)  # {page, paragraph, sentence, timestamp}
-    last_accessed = Column(DateTime, default=datetime.utcnow)
+    last_accessed = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     voice_settings = Column(JSON)  # {speed, voice, etc.}
     
     user = relationship("User", back_populates="book_states")
@@ -123,6 +119,19 @@ event.listen(
     Base.metadata,
     'before_create',
     DDL('CREATE EXTENSION IF NOT EXISTS vector;')
+)
+
+# Add this after all model definitions but before Base.metadata.create_all(engine)
+event.listen(
+    Page.__table__,
+    'after_create',
+    DDL(
+        """
+        CREATE TRIGGER tsvector_update BEFORE INSERT OR UPDATE
+        ON pages FOR EACH ROW EXECUTE PROCEDURE
+        tsvector_update_trigger(text_search, 'pg_catalog.english', paragraphed_text)
+        """
+    )
 )
 
 Base.metadata.create_all(engine)

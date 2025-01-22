@@ -2,6 +2,18 @@ import { useAuth } from '../contexts/AuthContext'
 import { useState } from 'react'
 import { API_BASE_URL } from '../services/config'
 
+type BookMetadata = {
+  book_id: string
+  reference_string: string
+  total_pages: number
+  table_of_contents: Record<number, {
+    title: string
+    page_number: number
+    timestamp?: number
+  }>
+  user_book_state_id: string
+}
+
 export function Dashboard() {
   const { email, logout } = useAuth()
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -27,10 +39,10 @@ export function Dashboard() {
         credentials: 'include'
       })
       
-      const data = await response.json()
+      const data: BookMetadata = await response.json()
       if (!response.ok) {
         console.error('Upload error:', data)
-        throw new Error(data.detail || 'Upload failed')
+        throw new Error(data.book_id || 'Upload failed')
       }
       console.log('Upload successful:', data)
       setSelectedFile(pendingFile)

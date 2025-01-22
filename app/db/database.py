@@ -3,10 +3,11 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from contextlib import contextmanager, asynccontextmanager
 from app.config import DATABASE_URL
-from typing import Optional, List
+from typing import Optional, List, Dict
 from uuid import UUID
 from app.models.models import Page, User, Book, UserBookState, VerificationCode
 from datetime import datetime
+import numpy as np
 
 # Sync SQLAlchemy engine
 engine = create_engine(DATABASE_URL, echo=True)
@@ -134,4 +135,43 @@ async def get_pages_from_book(book_id: str, start_page: int, num_pages: int) -> 
         )
         
         return result.scalars().all()
+
+async def create_user_book_state(user_id: str, book_id: str, cursor_position: Dict, voice_settings: Dict) -> UserBookState:
+    async with AsyncSessionLocal() as session:
+        book_state = UserBookState(
+            user_id=user_id,
+            book_id=book_id,
+            cursor_position=cursor_position,
+            voice_settings=voice_settings
+        )
+        session.add(book_state)
+        await session.commit()
+        await session.refresh(book_state)
+        return book_state
+
+async def create_page(
+    book_id: str,
+    page_number: int,
+    paragraphed_text: str,
+    sentenced_text: str,
+    embedding: np.ndarray,
+    chunk_embeddings: Optional[Dict] = None,
+    chapter: Optional[str] = None,
+    audio_chunks: Optional[Dict] = None
+) -> Page:
+    async with AsyncSessionLocal() as session:
+        page = Page(
+            book_id=book_id,
+            page_number=page_number,
+            chapter=chapter,
+            paragraphed_text=paragraphed_text,
+            sentenced_text=sentenced_text,
+            embedding=embedding.tolist(),  # Convert numpy array to list for storage
+            chunk_embeddings=chunk_embeddings,
+            audio_chunks=audio_chunks
+        )
+        session.add(page)
+        await session.commit()
+        await session.refresh(page)
+        return page
 

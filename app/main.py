@@ -17,11 +17,16 @@ class ReadingPosition(BaseModel):
     sentence: int
     timestamp: float
 
+class ChapterPosition(BaseModel):
+    title: str
+    page_number: int
+    timestamp: Optional[float]
+
 class BookMetadata(BaseModel):
     reference_string: str
     id: str
     total_pages: int
-    table_of_contents: Dict[str, ReadingPosition]
+    table_of_contents: Dict[str, ChapterPosition]
 
 # Actually think speedup should be handled on the client
 # and we should just send the current position to the server
@@ -88,11 +93,8 @@ async def upload_book(
     try:
         content = await file.read()
         file_path = save_uploaded_file(content, file.filename, UPLOAD_DIR)
-        metadata = process_pdf_upload(file_path)
-        
-        # TODO: Save book metadata to database
-        # This would involve creating a new Book record and associating it with the user
-        
+        metadata = await process_pdf_upload(file_path, current_user.id)
+        print(metadata)
         return metadata
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
