@@ -122,11 +122,44 @@ class OpenAISynthTranscriber(SynthTranscriber):
         return sentences
     
     def _convert_paragraph_text_to_buffers(self, paragraphed_text: list[str]) -> list[str]:
+        """Converts paragraphed text into buffers that are under MAX_CHARS in length.
+        Processing order:
+        1. Tries to fit whole paragraphs into a buffer
+        2. If space remains, tries to fit whole sentences
+        3. If space still remains, fits individual words
+        Any remaining text is added back to the start of the paragraph list for next iteration"""
         def flush_buffer() -> None:
             nonlocal current_buffer, sized_buffers
             if current_buffer.strip():
                 sized_buffers.append(current_buffer.strip())
                 current_buffer = ""
+
+        def process_sentences(current_buffer: str, paragraph_chunk: str) -> tuple[bool, list[str]]:
+            sentences = self._break_into_sentences(paragraph_chunk)
+            did_any_fit = False
+            while sentences:
+                sentence = sentences.pop(0)
+                if len(current_buffer + sentence + "\n") <= self.MAX_CHARS:
+                    current_buffer += sentence + "\n"
+                    did_any_fit = True
+                else:
+                    sentences.insert(0, sentence)
+                    break
+            return did_any_fit, current_buffer, sentences
+        
+
+        def process_words(current_buffer: str, sentences: list[str]) -> tuple[str, list[str]]:
+            words = sentences.pop(0).split(' ')
+            while words:
+                word = words.pop(0)
+                if len(current_buffer + word + " ") <= self.MAX_CHARS:
+                    current_buffer += word + " "
+                else:
+                    words.insert(0, word)
+                    break
+            sentences.insert(0, " ".join(words))
+            return current_buffer, sentences
+        
 
         sized_buffers = []
         current_buffer = ""
@@ -139,33 +172,16 @@ class OpenAISynthTranscriber(SynthTranscriber):
         while unprocessed_chunks:
             # At this point, optimistically processing paragraphs
             chunk = unprocessed_chunks.pop(0) 
-            if len(current_buffer + chunk) <= self.MAX_CHARS:
+            if len(current_buffer + chunk + "\n") <= self.MAX_CHARS:
                 current_buffer += chunk + "\n"
             else:
-                # Break into sentences
-                sentences = self._break_into_sentences(current_buffer)
-                while sentences:
-                    sentence = sentences.pop(0)
-                    if len(current_buffer + sentence) <= self.MAX_CHARS:
-                        current_buffer += sentence + "\n"
-                    else:
-                        sentences.insert(0, sentence)
-                        break
-                # process the rest of the sentence as words:
-                while sentences:
-                    words = sentences.pop(0).split(' ')
-                    while words:
-                        word = words.pop(0)
-                        if len(current_buffer + word) <= self.MAX_CHARS:
-                            current_buffer += word + " "
-                        else:
-                            words.insert(0, word)
-                            break
-                    sentences.insert(0, " ".join(words))
+                # process the paragragh as sentences if > max_chars
+                did_any_sentences_fit, current_buffer, sentences = process_sentences(current_buffer, chunk)
+                # process the sentence as words if > max_chars:
+                if sentences and not did_any_sentences_fit:
+                    current_buffer, sentences = process_words(current_buffer, sentences)
                     remainder = " ".join(sentences)
                     unprocessed_chunks.insert(0, remainder)
-
-            # if len(current_buffer.strip()) >= self.MAX_CHARS: flush_buffer()
             flush_buffer()
 
         flush_buffer() # clear remaining buffer

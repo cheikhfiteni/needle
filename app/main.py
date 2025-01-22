@@ -230,8 +230,7 @@ async def synthesize_text():
                         Here a moo, there a moo
                         Everywhere a moo-moo
                         Old MacDonald had a farm
-                        Ee i ee i o \n\n
-
+                        Ee i ee i o
                         Old MacDonald had a farm
                         Ee i ee i o
                         And on his farm he had some chicks
@@ -241,12 +240,12 @@ async def synthesize_text():
                         Here a cluck, there a cluck
                         Everywhere a cluck-cluck
                         Old MacDonald had a farm
-                        Ee i ee i o \n\n
-
+                        Ee i ee i o
                         Old MacDonald had a farm
                         Ee i ee i o
                         And on his farm he had some pigs
-                        Ee i ee i o
+                        Ee i ee i o \n\n
+                        
                         With an oink-oink here
                         And an oink-oink there
                         Here an oink, there an oink
