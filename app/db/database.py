@@ -5,7 +5,7 @@ from contextlib import contextmanager, asynccontextmanager
 from app.config import DATABASE_URL
 from typing import Optional, List, Dict
 from uuid import UUID
-from app.models.models import Page, User, Book, UserBookState, VerificationCode
+from app.models.models import AudioChunk, Page, User, Book, UserBookState, VerificationCode
 from datetime import datetime
 import numpy as np
 
@@ -216,3 +216,25 @@ async def update_reading_position(user_id: str, book_id: str, position: dict) ->
             await session.refresh(state)
         return state
 
+async def get_audio_chunk_for_timestamp(book_id: str, timestamp: float) -> tuple[Optional[AudioChunk], float]:
+    """
+    Gets the audio chunk and relative position for a given timestamp in a book
+    Returns (chunk, relative_position) tuple
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(AudioChunk).where(
+                and_(
+                    AudioChunk.book_id == book_id,
+                    AudioChunk.start_timestamp <= timestamp,
+                    AudioChunk.end_timestamp > timestamp
+                )
+            )
+        )
+        chunk = result.scalar_one_or_none()
+        
+        if not chunk:
+            return None, 0.0
+            
+        relative_position = timestamp - chunk.start_timestamp
+        return chunk, relative_position

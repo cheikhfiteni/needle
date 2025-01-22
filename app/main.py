@@ -1,5 +1,6 @@
-from fastapi import Depends, FastAPI, File, UploadFile, WebSocket, HTTPException
+from fastapi import Depends, FastAPI, File, Response, UploadFile, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.reader import OpenAISynthTranscriber
 from app.services.authentication import ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, router as auth_router, get_current_user
 from app.models.models import Book, User
 from starlette.middleware.sessions import SessionMiddleware
@@ -214,3 +215,52 @@ async def search_book(
     current_user: User = Depends(get_current_user)
 ):
     pass
+
+
+@app.get("/api/test/synthesize")
+async def synthesize_text():
+    import time
+    transcriber = OpenAISynthTranscriber()
+    OLD_MACDONALD = """Old MacDonald had a farm
+                        Ee i ee i o
+                        And on his farm he had some cows
+                        Ee i ee i oh
+                        With a moo-moo here
+                        And a moo-moo there
+                        Here a moo, there a moo
+                        Everywhere a moo-moo
+                        Old MacDonald had a farm
+                        Ee i ee i o \n\n
+
+                        Old MacDonald had a farm
+                        Ee i ee i o
+                        And on his farm he had some chicks
+                        Ee i ee i o
+                        With a cluck-cluck here
+                        And a cluck-cluck there
+                        Here a cluck, there a cluck
+                        Everywhere a cluck-cluck
+                        Old MacDonald had a farm
+                        Ee i ee i o \n\n
+
+                        Old MacDonald had a farm
+                        Ee i ee i o
+                        And on his farm he had some pigs
+                        Ee i ee i o
+                        With an oink-oink here
+                        And an oink-oink there
+                        Here an oink, there an oink
+                        Everywhere an oink-oink
+                        Old MacDonald had a farm
+                        Ee i ee i o"""
+    FINAL_TEXT = OLD_MACDONALD + OLD_MACDONALD + OLD_MACDONALD
+    chars = len(FINAL_TEXT)
+    print(f"chars: {chars}")
+    start = time.time()
+    content_bytes = transcriber._convert_text_to_audio(FINAL_TEXT)
+    end = time.time()
+    print(f"time: {end - start}")
+    return Response(
+        content=content_bytes,
+        media_type="audio/mpeg"
+    )
