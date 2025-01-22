@@ -170,18 +170,22 @@ class OpenAISynthTranscriber(SynthTranscriber):
 
         # Process paragraphs
         while unprocessed_chunks:
+            paragraph_processed = False
             # At this point, optimistically processing paragraphs
-            chunk = unprocessed_chunks.pop(0) 
-            if len(current_buffer + chunk + "\n") <= self.MAX_CHARS:
+            while unprocessed_chunks and len(current_buffer + (chunk:=unprocessed_chunks.pop(0)) + "\n") <= self.MAX_CHARS:
                 current_buffer += chunk + "\n"
-            else:
+                paragraph_processed = True
+
+            if not paragraph_processed:
                 # process the paragragh as sentences if > max_chars
                 did_any_sentences_fit, current_buffer, sentences = process_sentences(current_buffer, chunk)
+
                 # process the sentence as words if > max_chars:
                 if sentences and not did_any_sentences_fit:
                     current_buffer, sentences = process_words(current_buffer, sentences)
                     remainder = " ".join(sentences)
                     unprocessed_chunks.insert(0, remainder)
+
             flush_buffer()
 
         flush_buffer() # clear remaining buffer
