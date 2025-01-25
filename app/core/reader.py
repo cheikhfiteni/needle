@@ -1,16 +1,15 @@
 from abc import ABC, abstractmethod
 import os
 import re
-from openai import OpenAI
+from openai import AsyncOpenAI
 from sqlalchemy import select, and_
-from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_async_db, get_audio_chunk_for_timestamp
 from app.models.models import Page
 
 # Creating voices, synthesizing audio, diarization all done here.
 class SynthTranscriber(ABC):
     @abstractmethod
-    def synthesize_audio(self, page: Page) -> bytes:
+    def synthesize_page_audio(self, page: Page) -> bytes:
         pass
 
 # Actually managing the cursor position and plyaback interactions between
@@ -105,7 +104,7 @@ class Narrator(ABC):
 # Licensing out human audio would still be the recommended byte source.
 class OpenAISynthTranscriber(SynthTranscriber):
     def __init__(self):
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.MAX_CHARS = 4096
 
     def _break_into_sentences(self, text: str) -> list[str]:
@@ -195,14 +194,33 @@ class OpenAISynthTranscriber(SynthTranscriber):
         unprocessed_chunks = page.paragraphed_text[::-1]
         return self._convert_paragraph_text_to_buffers(unprocessed_chunks)
 
-    def _convert_text_to_audio(self, text: str, voice: str = "alloy") -> bytes:
-        response = self.client.audio.speech.create(
+    async def _convert_text_to_audio(self, text: str, voice: str = "alloy") -> bytes:
+        response = await self.client.audio.speech.create(
             model="tts-1",
             input=text,
             voice=voice
         )
         return response.content
         
-    def synthesize_audio(self, page: Page):
-        text = self._convert_page_to_text(page)
-        return self._convert_text_to_audio(text)
+    async def synthesize_page_audio(self, page: Page):
+        buffers = self._convert_page_to_buffered_text(page)
+        audio_bytes = b""
+        for buffer in buffers:
+            audio_bytes += await self._convert_text_to_audio(buffer)
+        return audio_bytes
+    
+# Singleton instances
+_openai_synth = None
+_narrator = None
+
+def get_synth() -> OpenAISynthTranscriber:
+    global _openai_synth
+    if _openai_synth is None:
+        _openai_synth = OpenAISynthTranscriber()
+    return _openai_synth
+
+def get_narrator() -> Narrator:
+    global _narrator
+    if _narrator is None:
+        _narrator = Narrator()
+    return _narrator

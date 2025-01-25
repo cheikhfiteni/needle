@@ -3,14 +3,92 @@ import uuid
 from PyPDF2 import PdfReader
 from typing import Dict, List, Optional
 import numpy as np
+import hashlib
 
-from app.db.vector_database import get_vector_db, get_embedder
-from app.db.database import create_book, create_user_book_state, create_page
-from app.models.models import Book, UserBookState, Page
+from app.db.vector_database import get_embedder
+from app.db.database import create_book, create_user_book_state, create_page, get_book_by_hash, save_page_audio
+from app.models.models import Book
 
-def _hash_consolidation_check(file_path: Path) -> bool:
-    # TODO: Implement hash consolidation check
-    return False
+from app.core.reader import get_synth
+import asyncio
+
+def _hash_file(file_path: Path) -> str:
+    """Calculate SHA-256 hash of a file"""
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        # Read file in chunks to handle large files
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+async def _hash_consolidation_check(file_path: Path, user_id: str) -> Optional[Dict]:
+    """
+    Check if we already have this file processed
+    Returns book metadata if found, None otherwise
+    """
+    file_hash = _hash_file(file_path)
+    existing_book = await get_book_by_hash(file_hash)
+    
+    if existing_book:
+        print(f"Found existing book with hash {file_hash}")
+        # Create new book state for user
+        book_state = await create_user_book_state(
+            user_id=user_id,
+            book_id=existing_book.id,
+            cursor_position={'page': 0, 'paragraph': 0, 'sentence': 0, 'timestamp': 0.0},
+            voice_settings={'speed': 1.0, 'voice': 'default', 'volume': 1.0}
+        )
+        
+        return {
+            'id': existing_book.id,
+            'reference_string': existing_book.reference_string,
+            'total_pages': existing_book.total_pages,
+            'table_of_contents': existing_book.table_of_contents,
+            'user_book_state_id': book_state.id,
+            'reused_existing': True
+        }
+    
+    return None
+
+async def audio_entire_book(book: Book) -> None:
+    """
+    Generate and save audio for an entire book, processing pages sequentially
+    and maintaining timing information.
+    """
+    synth = get_synth()
+    current_chapter: Optional[str] = None
+    chapter_offset = 0.0
+    
+    print(f"\nStarting audio generation for book: {book.reference_string}")
+    
+    for page in book.pages:
+        # Track chapter transitions
+        if page.chapter != current_chapter:
+            if current_chapter is not None:
+                print(f"\nCompleted chapter {current_chapter}")
+            current_chapter = page.chapter
+            chapter_offset = 0.0
+            print(f"\nStarting chapter: {current_chapter}")
+        
+        try:
+            # Generate audio for the page
+            audio_bytes = await synth.synthesize_page_audio(page.paragraphed_text)
+            duration = len(audio_bytes) / 32000  # Approximate duration
+            
+            # Save the audio with timing information
+            await save_page_audio(
+                audio_bytes=audio_bytes,
+                page_id=page.id,
+                duration=duration,
+                chapter_offset=chapter_offset
+            )
+            
+            # Update offset for next page
+            chapter_offset += duration
+            
+        except Exception as e:
+            print(f"Error processing page {page.page_number}: {str(e)}")
+            continue
 
 def _create_table_of_contents(reader: PdfReader) -> Dict:
     toc = {}
@@ -70,7 +148,12 @@ async def process_pdf_upload(file_path: Path, user_id: str) -> Dict:
     Process an uploaded PDF file and create all necessary database entries.
     Returns a dictionary containing book metadata.
     """
+    # Check if we already have this file
+    if existing_book := await _hash_consolidation_check(file_path, user_id):
+        return existing_book
+    
     reader = PdfReader(str(file_path))
+    file_hash = _hash_file(file_path)
     
     # Read file content for storage
     with open(file_path, 'rb') as f:
@@ -85,6 +168,7 @@ async def process_pdf_upload(file_path: Path, user_id: str) -> Dict:
     book = await create_book(
         reference_string=file_path.name,
         file_blob=file_blob,
+        file_hash=file_hash,
         total_pages=total_pages,
         table_of_contents=toc
     )
@@ -108,7 +192,7 @@ async def process_pdf_upload(file_path: Path, user_id: str) -> Dict:
         cursor_position=initial_cursor,
         voice_settings=default_voice_settings
     )
-    print(f"Book state created: {book_state.id}")
+    
     # Process pages
     pages = _extract_pages_text(reader)
     embeddings = _embed_pages(pages)
@@ -118,22 +202,25 @@ async def process_pdf_upload(file_path: Path, user_id: str) -> Dict:
         print("Saving page", page_num)
         chunks = _chunk_page(page_text)
         
-        # Create page with all data
         await create_page(
             book_id=book.id,
             page_number=page_num,
             paragraphed_text=chunks['paragraphs'],
             sentenced_text=chunks['sentences'],
             embedding=embedding,
-            chunk_embeddings=None  # Optional, can be updated later if needed
+            chunk_embeddings=None
         )
-    
+    print("Creating pages done")    
+    # Start audio processing in background
+    asyncio.create_task(audio_entire_book(book))
+    print("Audio processing started")
     return {
         'id': book.id,
         'reference_string': file_path.name,
         'total_pages': total_pages,
         'table_of_contents': toc,
-        'user_book_state_id': book_state.id
+        'user_book_state_id': book_state.id,
+        'reused_existing': False
     }
 
 def save_uploaded_file(file_content: bytes, filename: str, upload_dir: Path) -> Path:

@@ -238,3 +238,53 @@ async def get_audio_chunk_for_timestamp(book_id: str, timestamp: float) -> tuple
             
         relative_position = timestamp - chunk.start_timestamp
         return chunk, relative_position
+
+async def save_page_audio(audio_bytes: bytes, page_id: str, duration: float, chapter_offset: float = 0.0) -> None:
+    """
+    Save audio data for a page with timing information
+    
+    Args:
+        audio_bytes: Raw audio data
+        page_id: ID of the page to save audio for
+        duration: Duration of the audio in seconds
+        chapter_offset: Offset from start of chapter in seconds
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Page).where(Page.id == page_id))
+        page = result.scalar_one_or_none()
+        
+        if not page:
+            raise ValueError(f"Page {page_id} not found")
+            
+        # Update page audio data
+        page.audio_blob = audio_bytes
+        page.audio_duration = duration
+        page.audio_start_offset = chapter_offset
+        
+        # Calculate chapter offset based on previous pages if not provided
+        if chapter_offset == 0.0:
+            prev_pages = await session.execute(
+                select(Page)
+                .where(and_(
+                    Page.book_id == page.book_id,
+                    Page.chapter == page.chapter,
+                    Page.page_number < page.page_number
+                ))
+                .order_by(Page.page_number)
+            )
+            prev_pages = prev_pages.scalars().all()
+            
+            if prev_pages:
+                last_page = prev_pages[-1]
+                page.audio_start_offset = (last_page.audio_start_offset or 0.0) + (last_page.audio_duration or 0.0)
+        
+        await session.commit()
+        print(f"Saved audio for page {page.page_number} - Duration: {duration:.2f}s, Offset: {page.audio_start_offset:.2f}s")
+
+async def get_book_by_hash(file_hash: str) -> Optional[Book]:
+    """Get book by file hash"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Book).where(Book.file_hash == file_hash)
+        )
+        return result.scalar_one_or_none()
