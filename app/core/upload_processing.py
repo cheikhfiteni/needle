@@ -4,9 +4,10 @@ from PyPDF2 import PdfReader
 from typing import Dict, List, Optional
 import numpy as np
 import hashlib
+import os
 
 from app.db.vector_database import get_embedder
-from app.db.database import create_book, create_user_book_state, create_page, get_book_by_hash, save_page_audio
+from app.db.database import create_book, create_user_book_state, create_page, get_book_by_hash, save_page_audio, get_user_book_state_by_ids
 from app.models.models import Book
 
 from app.core.reader import get_synth
@@ -21,34 +22,55 @@ def _hash_file(file_path: Path) -> str:
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
 
+def _cleanup_temp_file(file_path: Path) -> None:
+    try:
+        os.remove(file_path)
+        print(f"Cleaned up temp file {file_path}")
+    except Exception as e:
+        print(f"Error cleaning up temp file: {e}")
+
 async def _hash_consolidation_check(file_path: Path, user_id: str) -> Optional[Dict]:
     """
     Check if we already have this file processed
-    Returns book metadata if found, None otherwise
+    Returns book state metadata if found, None otherwise
     """
     file_hash = _hash_file(file_path)
     existing_book = await get_book_by_hash(file_hash)
+
+    if not existing_book:
+        return None
     
-    if existing_book:
-        print(f"Found existing book with hash {file_hash}")
-        # Create new book state for user
+    print(f"Book exists in global catalog with hash {file_hash}")
+    existing_user_book_state = await get_user_book_state_by_ids(user_id, existing_book.id)
+
+    if existing_user_book_state:
+        book_state_metadata = {
+            'id': existing_book.id,
+            'reference_string': existing_book.reference_string,
+            'total_pages': existing_book.total_pages,
+            'table_of_contents': existing_book.table_of_contents,
+            'user_book_state_id': existing_user_book_state.id,
+            'reused_existing': True
+        }
+    else:
         book_state = await create_user_book_state(
             user_id=user_id,
             book_id=existing_book.id,
             cursor_position={'page': 0, 'paragraph': 0, 'sentence': 0, 'timestamp': 0.0},
             voice_settings={'speed': 1.0, 'voice': 'default', 'volume': 1.0}
         )
-        
-        return {
+        book_state_metadata = {
             'id': existing_book.id,
             'reference_string': existing_book.reference_string,
             'total_pages': existing_book.total_pages,
             'table_of_contents': existing_book.table_of_contents,
             'user_book_state_id': book_state.id,
-            'reused_existing': True
+            'reused_existing': False
         }
-    
-    return None
+
+    _cleanup_temp_file(file_path)
+    return book_state_metadata
+
 
 async def audio_entire_book(book: Book) -> None:
     """
@@ -149,8 +171,8 @@ async def process_pdf_upload(file_path: Path, user_id: str) -> Dict:
     Returns a dictionary containing book metadata.
     """
     # Check if we already have this file
-    if existing_book := await _hash_consolidation_check(file_path, user_id):
-        return existing_book
+    if book_state_metadata := await _hash_consolidation_check(file_path, user_id):
+        return book_state_metadata
     
     reader = PdfReader(str(file_path))
     file_hash = _hash_file(file_path)

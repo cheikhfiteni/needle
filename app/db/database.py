@@ -288,3 +288,16 @@ async def get_book_by_hash(file_hash: str) -> Optional[Book]:
             select(Book).where(Book.file_hash == file_hash)
         )
         return result.scalar_one_or_none()
+
+async def get_user_book_state_by_ids(user_id: str, book_id: str) -> Optional[UserBookState]:
+    """Get user book state by user_id and book_id"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(UserBookState).where(
+                and_(
+                    UserBookState.user_id == user_id,
+                    UserBookState.book_id == book_id
+                )
+            )
+        )
+        return result.scalar_one_or_none()
