@@ -91,11 +91,13 @@ async def get_valid_verification_code(email: str, code: str) -> Optional[Verific
         )
         return result.scalar_one_or_none()
 
-async def create_book(reference_string: str, file_blob: bytes, total_pages: int, table_of_contents: dict) -> Book:
+async def create_book(reference_string: str, file_blob: bytes, file_hash: str, total_pages: int, table_of_contents: dict) -> Book:
+    print("Creating book")
     async with AsyncSessionLocal() as session:
         book = Book(
             reference_string=reference_string,
             file_blob=file_blob,
+            file_hash=file_hash,
             total_pages=total_pages,
             table_of_contents=table_of_contents
         )
@@ -152,12 +154,11 @@ async def create_user_book_state(user_id: str, book_id: str, cursor_position: Di
 async def create_page(
     book_id: str,
     page_number: int,
-    paragraphed_text: str,
-    sentenced_text: str,
+    paragraphed_text: List[str],
+    sentenced_text: List[str],
     embedding: np.ndarray,
     chunk_embeddings: Optional[Dict] = None,
-    chapter: Optional[str] = None,
-    audio_chunks: Optional[Dict] = None
+    chapter: Optional[str] = None
 ) -> Page:
     async with AsyncSessionLocal() as session:
         page = Page(
@@ -167,8 +168,7 @@ async def create_page(
             paragraphed_text=paragraphed_text,
             sentenced_text=sentenced_text,
             embedding=embedding.tolist(),  # Convert numpy array to list for storage
-            chunk_embeddings=chunk_embeddings,
-            audio_chunks=audio_chunks
+            chunk_embeddings=chunk_embeddings
         )
         session.add(page)
         await session.commit()

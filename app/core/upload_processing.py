@@ -163,7 +163,7 @@ async def process_pdf_upload(file_path: Path, user_id: str) -> Dict:
     toc = _create_table_of_contents(reader)
     total_pages = len(reader.pages)
     print(f"Total pages: {total_pages}")
-    
+    print("Creating book")
     # Create book entry
     book = await create_book(
         reference_string=file_path.name,
@@ -172,7 +172,7 @@ async def process_pdf_upload(file_path: Path, user_id: str) -> Dict:
         total_pages=total_pages,
         table_of_contents=toc
     )
-    
+    print("Book created")
     # Initialize user book state
     initial_cursor = {
         'page': 0,
@@ -192,7 +192,7 @@ async def process_pdf_upload(file_path: Path, user_id: str) -> Dict:
         cursor_position=initial_cursor,
         voice_settings=default_voice_settings
     )
-    
+    print("Book state created")
     # Process pages
     pages = _extract_pages_text(reader)
     embeddings = _embed_pages(pages)

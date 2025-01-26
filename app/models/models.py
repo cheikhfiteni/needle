@@ -154,7 +154,7 @@ event.listen(
         """
         CREATE TRIGGER tsvector_update BEFORE INSERT OR UPDATE
         ON pages FOR EACH ROW EXECUTE PROCEDURE
-        tsvector_update_trigger(text_search, 'pg_catalog.english', paragraphed_text)
+        tsvector_update_trigger(text_search, 'pg_catalog.english', array_to_string(paragraphed_text, ' '))
         """
     )
 )
