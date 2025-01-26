@@ -178,7 +178,7 @@ async def create_page(
 async def get_user_books(user_id: str) -> List[Book]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Book, UserBookState)
+            select(Book)
             .join(UserBookState, and_(
                 UserBookState.book_id == Book.id,
                 UserBookState.user_id == user_id
