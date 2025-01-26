@@ -7,7 +7,7 @@ import hashlib
 import os
 
 from app.db.vector_database import get_embedder
-from app.db.database import create_book, create_user_book_state, create_page, get_book_by_hash, save_page_audio, get_user_book_state_by_ids
+from app.db.database import create_book, create_user_book_state, create_page, get_book_by_hash, get_book_by_id, save_page_audio, get_user_book_state_by_ids, get_pages_from_book
 from app.models.models import Book
 
 from app.core.reader import get_synth
@@ -72,7 +72,7 @@ async def _hash_consolidation_check(file_path: Path, user_id: str) -> Optional[D
     return book_state_metadata
 
 
-async def audio_entire_book(book: Book) -> None:
+async def audio_entire_book(book_id: str) -> None:
     """
     Generate and save audio for an entire book, processing pages sequentially
     and maintaining timing information.
@@ -81,9 +81,14 @@ async def audio_entire_book(book: Book) -> None:
     current_chapter: Optional[str] = None
     chapter_offset = 0.0
     
-    print(f"\nStarting audio generation for book: {book.reference_string}")
+    print(f"\nStarting audio generation for book: {book_id}")
     
-    for page in book.pages:
+    # Get all pages using the database function
+    pages = await get_pages_from_book(book_id, 0, 999999)  # Large number to get all pages
+    
+    for page in pages:
+        print(f"Processing page {page.page_number}")
+        print(page)
         # Track chapter transitions
         if page.chapter != current_chapter:
             if current_chapter is not None:
@@ -94,7 +99,8 @@ async def audio_entire_book(book: Book) -> None:
         
         try:
             # Generate audio for the page
-            audio_bytes = await synth.synthesize_page_audio(page.paragraphed_text)
+            print(f"Generating audio for page {page.page_number}")
+            audio_bytes = await synth.synthesize_page_audio(page)
             duration = len(audio_bytes) / 32000  # Approximate duration
             
             # Save the audio with timing information
@@ -107,6 +113,7 @@ async def audio_entire_book(book: Book) -> None:
             
             # Update offset for next page
             chapter_offset += duration
+            print("\033[91mSaved page audio\033[0m")
             
         except Exception as e:
             print(f"Error processing page {page.page_number}: {str(e)}")
@@ -153,7 +160,6 @@ def _extract_pages_text(reader: PdfReader) -> List[str]:
 def _embed_pages(pages: List[str]) -> List[np.ndarray]:
     print("Embedding pages")
     embedder = get_embedder()
-    print("Embedding pages done")
     return [embedder.embed_text(page) for page in pages]    
 
 def _chunk_page(page_text: str) -> Dict[str, List[str]]:
@@ -233,8 +239,7 @@ async def process_pdf_upload(file_path: Path, user_id: str) -> Dict:
             chunk_embeddings=None
         )
     print("Creating pages done")    
-    # Start audio processing in background
-    asyncio.create_task(audio_entire_book(book))
+    asyncio.create_task(audio_entire_book(book.id))
     print("Audio processing started")
     return {
         'id': book.id,

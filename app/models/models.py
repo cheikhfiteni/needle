@@ -146,17 +146,35 @@ event.listen(
     DDL('CREATE EXTENSION IF NOT EXISTS vector;')
 )
 
-# Add this after all model definitions but before Base.metadata.create_all(engine)
+# First create a function to handle array to tsvector conversion
+create_array_to_tsvector = DDL("""
+    CREATE OR REPLACE FUNCTION pages_trigger_function() RETURNS trigger AS $$
+    BEGIN
+        NEW.text_search := to_tsvector('pg_catalog.english', array_to_string(NEW.paragraphed_text, ' '));
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+""")
+
+# Then create the trigger that uses this function
+create_trigger = DDL("""
+    CREATE TRIGGER tsvector_update 
+    BEFORE INSERT OR UPDATE ON pages
+    FOR EACH ROW 
+    EXECUTE FUNCTION pages_trigger_function();
+""")
+
+# Register both events
 event.listen(
-    Page.__table__,
+    Page.__table__, 
     'after_create',
-    DDL(
-        """
-        CREATE TRIGGER tsvector_update BEFORE INSERT OR UPDATE
-        ON pages FOR EACH ROW EXECUTE PROCEDURE
-        tsvector_update_trigger(text_search, 'pg_catalog.english', array_to_string(paragraphed_text, ' '))
-        """
-    )
+    create_array_to_tsvector.execute_if(dialect='postgresql')
+)
+
+event.listen(
+    Page.__table__, 
+    'after_create',
+    create_trigger.execute_if(dialect='postgresql')
 )
 
 Base.metadata.create_all(engine)

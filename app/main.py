@@ -1,12 +1,14 @@
-from fastapi import Depends, FastAPI, File, Response, UploadFile, WebSocket, HTTPException
+from fastapi import Depends, FastAPI, File, Response, UploadFile, WebSocket, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from app.core.reader import OpenAISynthTranscriber
+from app.core.reader import OpenAISynthTranscriber, get_narrator
 from app.services.authentication import ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, router as auth_router, get_current_user
 from app.models.models import Book, User
 from starlette.middleware.sessions import SessionMiddleware
 from pathlib import Path
 from app.core.upload_processing import process_pdf_upload, save_uploaded_file
 from app.db.database import get_book_with_state, update_reading_position, get_user_books
+from fastapi.responses import StreamingResponse
+import io
 
 from app.config import FRONTEND_URL
 
@@ -269,3 +271,42 @@ async def synthesize_text():
     # print(f"time: {end - start}")
     print("sum_len", sum_len)
     return {"status": "ok", "sum_len": sum_len}
+
+@app.get("/api/narration/audio/{book_id}")
+async def get_audio(
+    book_id: str,
+    timestamp: float,
+    current_user: User = Depends(get_current_user)
+) -> StreamingResponse:
+    try:
+        narrator = get_narrator(book_id)
+        audio_data = await narrator.load_audio_for_timestamp(timestamp)
+        return StreamingResponse(
+            io.BytesIO(audio_data),
+            media_type="audio/mpeg",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(len(audio_data))
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/narration/interrupt")
+async def interrupt_narration(
+    request: Request,
+    current_user: User = Depends(get_current_user)
+) -> dict:
+    try:
+        data = await request.json()
+        book_id = data.get("book_id")
+        timestamp = data.get("timestamp")
+        
+        if not book_id or timestamp is None:
+            raise HTTPException(status_code=400, detail="Missing book_id or timestamp")
+            
+        narrator = get_narrator(book_id)
+        await narrator.interrupt(timestamp, str(current_user.id))
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

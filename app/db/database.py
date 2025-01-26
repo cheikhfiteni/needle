@@ -46,7 +46,7 @@ async def get_user_by_email(email: str) -> Optional[User]:
         )
         return result.scalar_one_or_none()
 
-async def get_book_by_id(book_id: UUID) -> Optional[dict]:
+async def get_book_by_id(book_id: UUID) -> Optional[Book]:
     async with get_async_db() as session:
         result = await session.execute(
             select(Book).where(Book.id == book_id)

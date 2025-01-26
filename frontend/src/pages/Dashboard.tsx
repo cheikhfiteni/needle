@@ -1,5 +1,5 @@
 import { useAuth } from '../contexts/AuthContext'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { API_BASE_URL } from '../services/config'
 
 type BookMetadata = {
@@ -13,10 +13,21 @@ type BookMetadata = {
   }>
 }
 
+type AudioPlayerState = {
+  isPlaying: boolean
+  currentTime: number
+  duration: number
+  bufferedRanges: { start: number; end: number }[]
+}
+
+type BufferRange = {
+  start: number
+  end: number
+}
+
 export function Dashboard() {
   const { email, logout } = useAuth()
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [isPlaying, setIsPlaying] = useState(false)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [books, setBooks] = useState<BookMetadata[]>([])
   const [selectedBook, setSelectedBook] = useState<BookMetadata | null>(null)
@@ -26,6 +37,15 @@ export function Dashboard() {
     sentence: number;
     timestamp: number;
   } | null>(null)
+
+  // Audio player state
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const [playerState, setPlayerState] = useState<AudioPlayerState>({
+    isPlaying: false,
+    currentTime: 0,
+    duration: 0,
+    bufferedRanges: []
+  })
 
   useEffect(() => {
     const fetchBooks = async () => {
@@ -47,6 +67,52 @@ export function Dashboard() {
     return () => clearInterval(interval)
   }, [])
 
+  // Handle audio time updates
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+
+    const handleTimeUpdate = () => {
+      setPlayerState(prev => ({
+        ...prev,
+        currentTime: audio.currentTime
+      }))
+    }
+
+    const handleDurationChange = () => {
+      setPlayerState(prev => ({
+        ...prev,
+        duration: audio.duration
+      }))
+    }
+
+    const handleProgress = () => {
+      const ranges: BufferRange[] = []
+      for (let i = 0; i < (audioRef.current?.buffered.length || 0); i++) {
+        if (audioRef.current?.buffered) {
+          ranges.push({
+            start: audioRef.current.buffered.start(i),
+            end: audioRef.current.buffered.end(i)
+          })
+        }
+      }
+      setPlayerState(prev => ({
+        ...prev,
+        bufferedRanges: ranges
+      }))
+    }
+
+    audio.addEventListener('timeupdate', handleTimeUpdate)
+    audio.addEventListener('durationchange', handleDurationChange)
+    audio.addEventListener('progress', handleProgress)
+
+    return () => {
+      audio.removeEventListener('timeupdate', handleTimeUpdate)
+      audio.removeEventListener('durationchange', handleDurationChange)
+      audio.removeEventListener('progress', handleProgress)
+    }
+  }, [])
+
   const handleBookSelect = async (book: BookMetadata) => {
     setSelectedBook(book)
     try {
@@ -56,6 +122,9 @@ export function Dashboard() {
       if (response.ok) {
         const position = await response.json()
         setCurrentPosition(position)
+        if (audioRef.current) {
+          audioRef.current.currentTime = position.timestamp || 0
+        }
       }
     } catch (error) {
       console.error('Error fetching book position:', error)
@@ -94,26 +163,72 @@ export function Dashboard() {
     }
   }
 
-  const togglePlayback = async () => {
+  // Handle audio playback controls
+  const handlePlayPause = async () => {
+    if (!selectedBook || !audioRef.current) return
+
     try {
-      if (isPlaying) {
-        console.log('Pausing narration')
-        await fetch('/api/narration/pause', {
+      if (playerState.isPlaying) {
+        audioRef.current.pause()
+        await fetch(`${API_BASE_URL}/api/narration/interrupt`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
-          body: JSON.stringify({ /* Add position data here */ })
+          body: JSON.stringify({
+            book_id: selectedBook.id,
+            timestamp: audioRef.current.currentTime
+          })
         })
       } else {
-        console.log('Starting narration')
-        const ws = new WebSocket(`ws://${window.location.host}/api/narration/stream/book_id`)
-        // Add WebSocket handling here
+        // Instead of creating a blob URL, directly set the src to the streaming endpoint
+        audioRef.current.src = `${API_BASE_URL}/api/narration/audio/${selectedBook.id}?timestamp=${audioRef.current.currentTime}`
+        try {
+          await audioRef.current.play()
+        } catch (error) {
+          console.error('Playback failed:', error)
+          return
+        }
       }
-      setIsPlaying(!isPlaying)
+      setPlayerState(prev => ({ ...prev, isPlaying: !prev.isPlaying }))
     } catch (error) {
       console.error('Error controlling playback:', error)
     }
   }
+
+  const handleScrub = async (newTime: number) => {
+    if (!selectedBook || !audioRef.current) return
+
+    try {
+      // Update the audio source to the new timestamp
+      audioRef.current.src = `${API_BASE_URL}/api/narration/audio/${selectedBook.id}?timestamp=${newTime}`
+      audioRef.current.currentTime = newTime
+      
+      if (playerState.isPlaying) {
+        try {
+          await audioRef.current.play()
+        } catch (error) {
+          console.error('Playback failed after scrub:', error)
+          setPlayerState(prev => ({ ...prev, isPlaying: false }))
+        }
+      }
+    } catch (error) {
+      console.error('Error scrubbing:', error)
+    }
+  }
+
+  // Add error handling for audio
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+
+    const handleError = (e: Event) => {
+      console.error('Audio error:', e)
+      setPlayerState(prev => ({ ...prev, isPlaying: false }))
+    }
+
+    audio.addEventListener('error', handleError)
+    return () => audio.removeEventListener('error', handleError)
+  }, [])
 
   return (
     <div className="min-h-screen p-4">
@@ -162,32 +277,63 @@ export function Dashboard() {
           </div>
         </section>
 
-        <section className="p-6 bg-white rounded-lg shadow">
-          <h2 className="text-xl font-semibold mb-4">Audio Controls</h2>
-          <div className="flex gap-4">
-            <button
-              onClick={togglePlayback}
-              className={`px-6 py-3 rounded-md font-medium ${
-                isPlaying
-                  ? 'bg-red-500 hover:bg-red-600 text-white'
-                  : 'bg-green-500 hover:bg-green-600 text-white'
-              }`}
-            >
-              {isPlaying ? 'Pause' : 'Play'}
-            </button>
-            <button
-              className="px-6 py-3 bg-yellow-500 hover:bg-yellow-600 text-white rounded-md font-medium"
-              onClick={() => {
-                console.log('Interrupting narration')
-                if (isPlaying) {
-                  setIsPlaying(false)
-                }
-              }}
-            >
-              Interrupt
-            </button>
-          </div>
-        </section>
+        {selectedBook && (
+          <section className="mb-8 p-6 bg-white rounded-lg shadow">
+            <h2 className="text-xl font-semibold mb-4">Audio Player</h2>
+            <div className="space-y-4">
+              <audio ref={audioRef} className="hidden" />
+              
+              {/* Progress bar */}
+              <div className="relative h-2 bg-gray-200 rounded-full">
+                {/* Buffered ranges */}
+                {playerState.bufferedRanges.map((range, i) => (
+                  <div
+                    key={i}
+                    className="absolute h-full bg-gray-400 rounded-full"
+                    style={{
+                      left: `${(range.start / playerState.duration) * 100}%`,
+                      width: `${((range.end - range.start) / playerState.duration) * 100}%`
+                    }}
+                  />
+                ))}
+                {/* Progress */}
+                <div
+                  className="absolute h-full bg-violet-500 rounded-full"
+                  style={{
+                    width: `${(playerState.currentTime / playerState.duration) * 100}%`
+                  }}
+                />
+                <input
+                  type="range"
+                  min="0"
+                  max={playerState.duration}
+                  value={playerState.currentTime}
+                  onChange={(e) => handleScrub(parseFloat(e.target.value))}
+                  className="absolute w-full h-full opacity-0 cursor-pointer"
+                />
+              </div>
+
+              {/* Controls */}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">
+                  {formatTime(playerState.currentTime)} / {formatTime(playerState.duration)}
+                </span>
+                <div className="flex gap-4">
+                  <button
+                    onClick={handlePlayPause}
+                    className={`px-6 py-3 rounded-md font-medium ${
+                      playerState.isPlaying
+                        ? 'bg-red-500 hover:bg-red-600 text-white'
+                        : 'bg-green-500 hover:bg-green-600 text-white'
+                    }`}
+                  >
+                    {playerState.isPlaying ? 'Pause' : 'Play'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
 
         <section className="mb-8 p-6 bg-white rounded-lg shadow">
           <h2 className="text-xl font-semibold mb-4">Your Books</h2>
@@ -216,4 +362,11 @@ export function Dashboard() {
       </main>
     </div>
   )
+}
+
+// Helper function to format time
+function formatTime(seconds: number): string {
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = Math.floor(seconds % 60)
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
 } 
