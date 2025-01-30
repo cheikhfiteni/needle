@@ -38,6 +38,7 @@ class OpenAIEmbedder(TextEmbedder):
         self.model = model
         
     def embed_text(self, text: str) -> np.ndarray:
+        print(text)
         response = self.client.embeddings.create(
             model=self.model,
             input=text

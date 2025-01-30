@@ -1,6 +1,7 @@
 import { useAuth } from '../contexts/AuthContext'
 import { useState, useEffect } from 'react'
 import { API_BASE_URL } from '../services/config'
+import { AudioStreamer } from '../components/AudioStreamer'
 
 type BookMetadata = {
   id: string
@@ -13,19 +14,44 @@ type BookMetadata = {
   }>
 }
 
+type Position = {
+  page: number
+  paragraph: number
+  sentence: number
+  timestamp: number
+}
+
 export function Dashboard() {
   const { email, logout } = useAuth()
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [isPlaying, setIsPlaying] = useState(false)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [books, setBooks] = useState<BookMetadata[]>([])
   const [selectedBook, setSelectedBook] = useState<BookMetadata | null>(null)
-  const [currentPosition, setCurrentPosition] = useState<{
-    page: number;
-    paragraph: number;
-    sentence: number;
-    timestamp: number;
-  } | null>(null)
+  const [currentPosition, setCurrentPosition] = useState<Position | null>(null)
+
+  const {
+    controls: {
+      play,
+      pause,
+      seek,
+      isPlaying,
+      currentTime,
+      duration,
+      bufferedRanges,
+    },
+    AudioElement
+  } = AudioStreamer({
+    bookId: selectedBook?.id || '',
+    onTimeUpdate: (time) => {
+      if (currentPosition) {
+        setCurrentPosition({ ...currentPosition, timestamp: time })
+      }
+    },
+    onError: (error) => {
+      console.error('Audio error:', error)
+    },
+    initialTimestamp: currentPosition?.timestamp || 0
+  })
 
   useEffect(() => {
     const fetchBooks = async () => {
@@ -43,7 +69,7 @@ export function Dashboard() {
     }
 
     fetchBooks()
-    const interval = setInterval(fetchBooks, 120000) // Refresh every 2 minutes
+    const interval = setInterval(fetchBooks, 120000)
     return () => clearInterval(interval)
   }, [])
 
@@ -94,25 +120,16 @@ export function Dashboard() {
     }
   }
 
-  const togglePlayback = async () => {
-    try {
-      if (isPlaying) {
-        console.log('Pausing narration')
-        await fetch('/api/narration/pause', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ /* Add position data here */ })
-        })
-      } else {
-        console.log('Starting narration')
-        const ws = new WebSocket(`ws://${window.location.host}/api/narration/stream/book_id`)
-        // Add WebSocket handling here
-      }
-      setIsPlaying(!isPlaying)
-    } catch (error) {
-      console.error('Error controlling playback:', error)
+  const handlePlayPause = () => {
+    if (isPlaying) {
+      pause()
+    } else {
+      play()
     }
+  }
+
+  const handleScrub = (newTime: number) => {
+    seek(newTime)
   }
 
   return (
@@ -162,32 +179,58 @@ export function Dashboard() {
           </div>
         </section>
 
-        <section className="p-6 bg-white rounded-lg shadow">
-          <h2 className="text-xl font-semibold mb-4">Audio Controls</h2>
-          <div className="flex gap-4">
-            <button
-              onClick={togglePlayback}
-              className={`px-6 py-3 rounded-md font-medium ${
-                isPlaying
-                  ? 'bg-red-500 hover:bg-red-600 text-white'
-                  : 'bg-green-500 hover:bg-green-600 text-white'
-              }`}
-            >
-              {isPlaying ? 'Pause' : 'Play'}
-            </button>
-            <button
-              className="px-6 py-3 bg-yellow-500 hover:bg-yellow-600 text-white rounded-md font-medium"
-              onClick={() => {
-                console.log('Interrupting narration')
-                if (isPlaying) {
-                  setIsPlaying(false)
-                }
-              }}
-            >
-              Interrupt
-            </button>
-          </div>
-        </section>
+        {selectedBook && (
+          <section className="mb-8 p-6 bg-white rounded-lg shadow">
+            <h2 className="text-xl font-semibold mb-4">Audio Player</h2>
+            <div className="space-y-4">
+              {AudioElement}
+              <div className="relative h-2 bg-gray-200 rounded-full">
+                {bufferedRanges.map((range, i) => (
+                  <div
+                    key={i}
+                    className="absolute h-full bg-gray-400 rounded-full"
+                    style={{
+                      left: `${(range.start / duration) * 100}%`,
+                      width: `${((range.end - range.start) / duration) * 100}%`
+                    }}
+                  />
+                ))}
+                <div
+                  className="absolute h-full bg-violet-500 rounded-full"
+                  style={{
+                    width: `${(currentTime / duration) * 100}%`
+                  }}
+                />
+                <input
+                  type="range"
+                  min="0"
+                  max={duration}
+                  value={currentTime}
+                  onChange={(e) => handleScrub(parseFloat(e.target.value))}
+                  className="absolute w-full h-full opacity-0 cursor-pointer"
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">
+                  {formatTime(currentTime)} / {formatTime(duration)}
+                </span>
+                <div className="flex gap-4">
+                  <button
+                    onClick={handlePlayPause}
+                    className={`px-6 py-3 rounded-md font-medium ${
+                      isPlaying
+                        ? 'bg-red-500 hover:bg-red-600 text-white'
+                        : 'bg-green-500 hover:bg-green-600 text-white'
+                    }`}
+                  >
+                    {isPlaying ? 'Pause' : 'Play'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
 
         <section className="mb-8 p-6 bg-white rounded-lg shadow">
           <h2 className="text-xl font-semibold mb-4">Your Books</h2>
@@ -216,4 +259,11 @@ export function Dashboard() {
       </main>
     </div>
   )
+}
+
+function formatTime(seconds: number): string {
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = Math.floor(seconds % 60)
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
 } 
+

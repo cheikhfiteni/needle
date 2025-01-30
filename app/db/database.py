@@ -46,7 +46,7 @@ async def get_user_by_email(email: str) -> Optional[User]:
         )
         return result.scalar_one_or_none()
 
-async def get_book_by_id(book_id: UUID) -> Optional[dict]:
+async def get_book_by_id(book_id: UUID) -> Optional[Book]:
     async with get_async_db() as session:
         result = await session.execute(
             select(Book).where(Book.id == book_id)
@@ -91,11 +91,13 @@ async def get_valid_verification_code(email: str, code: str) -> Optional[Verific
         )
         return result.scalar_one_or_none()
 
-async def create_book(reference_string: str, file_blob: bytes, total_pages: int, table_of_contents: dict) -> Book:
+async def create_book(reference_string: str, file_blob: bytes, file_hash: str, total_pages: int, table_of_contents: dict) -> Book:
+    print("Creating book")
     async with AsyncSessionLocal() as session:
         book = Book(
             reference_string=reference_string,
             file_blob=file_blob,
+            file_hash=file_hash,
             total_pages=total_pages,
             table_of_contents=table_of_contents
         )
@@ -152,12 +154,11 @@ async def create_user_book_state(user_id: str, book_id: str, cursor_position: Di
 async def create_page(
     book_id: str,
     page_number: int,
-    paragraphed_text: str,
-    sentenced_text: str,
+    paragraphed_text: List[str],
+    sentenced_text: List[str],
     embedding: np.ndarray,
     chunk_embeddings: Optional[Dict] = None,
-    chapter: Optional[str] = None,
-    audio_chunks: Optional[Dict] = None
+    chapter: Optional[str] = None
 ) -> Page:
     async with AsyncSessionLocal() as session:
         page = Page(
@@ -167,8 +168,7 @@ async def create_page(
             paragraphed_text=paragraphed_text,
             sentenced_text=sentenced_text,
             embedding=embedding.tolist(),  # Convert numpy array to list for storage
-            chunk_embeddings=chunk_embeddings,
-            audio_chunks=audio_chunks
+            chunk_embeddings=chunk_embeddings
         )
         session.add(page)
         await session.commit()
@@ -178,7 +178,7 @@ async def create_page(
 async def get_user_books(user_id: str) -> List[Book]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Book, UserBookState)
+            select(Book)
             .join(UserBookState, and_(
                 UserBookState.book_id == Book.id,
                 UserBookState.user_id == user_id
@@ -216,25 +216,117 @@ async def update_reading_position(user_id: str, book_id: str, position: dict) ->
             await session.refresh(state)
         return state
 
-async def get_audio_chunk_for_timestamp(book_id: str, timestamp: float) -> tuple[Optional[AudioChunk], float]:
+async def get_audio_chunk_for_timestamp(book_id: str, timestamp: float) -> tuple[Optional[Page], float]:
     """
-    Gets the audio chunk and relative position for a given timestamp in a book
-    Returns (chunk, relative_position) tuple
+    Gets the page containing audio for a given timestamp in a book
+    Returns (page, relative_position) tuple
     """
+    print(f"\nDEBUG: Fetching page audio for book_id={book_id}, timestamp={timestamp}")
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(AudioChunk).where(
+            select(Page).where(
                 and_(
-                    AudioChunk.book_id == book_id,
-                    AudioChunk.start_timestamp <= timestamp,
-                    AudioChunk.end_timestamp > timestamp
+                    Page.book_id == book_id,
+                    Page.audio_start_offset <= timestamp,
+                    (Page.audio_start_offset + Page.audio_duration) > timestamp
                 )
             )
         )
-        chunk = result.scalar_one_or_none()
+        page = result.scalar_one_or_none()
+        print(f"DEBUG: Found page with audio: {page is not None}")
         
-        if not chunk:
+        if not page:
+            print("DEBUG: No page found with audio for this timestamp")
             return None, 0.0
             
-        relative_position = timestamp - chunk.start_timestamp
-        return chunk, relative_position
+        relative_position = timestamp - page.audio_start_offset
+        print(f"DEBUG: Returning page with relative_position={relative_position}")
+        return page, relative_position
+
+async def create_audio_chunk(
+    book_id: str,
+    sequence_number: int,
+    start_page: int,
+    end_page: int,
+    start_timestamp: float,
+    end_timestamp: float,
+    audio_blob: bytes
+) -> AudioChunk:
+    """Create an audio chunk entry"""
+    async with AsyncSessionLocal() as session:
+        chunk = AudioChunk(
+            book_id=book_id,
+            sequence_number=sequence_number,
+            start_page=start_page,
+            end_page=end_page,
+            start_timestamp=start_timestamp,
+            end_timestamp=end_timestamp,
+            audio_blob=audio_blob
+        )
+        session.add(chunk)
+        await session.commit()
+        await session.refresh(chunk)
+        return chunk
+
+async def save_page_audio(audio_bytes: bytes, page_id: str, duration: float, chapter_offset: float = 0.0) -> None:
+    """
+    Save audio data for a page with timing information
+    
+    Args:
+        audio_bytes: Raw audio data
+        page_id: ID of the page to save audio for
+        duration: Duration of the audio in seconds
+        chapter_offset: Offset from start of chapter in seconds
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Page).where(Page.id == page_id))
+        page = result.scalar_one_or_none()
+        
+        if not page:
+            raise ValueError(f"Page {page_id} not found")
+            
+        # Update page audio data
+        page.audio_blob = audio_bytes
+        page.audio_duration = duration
+        page.audio_start_offset = chapter_offset
+        
+        # Calculate chapter offset based on previous pages if not provided
+        if chapter_offset == 0.0:
+            prev_pages = await session.execute(
+                select(Page)
+                .where(and_(
+                    Page.book_id == page.book_id,
+                    Page.chapter == page.chapter,
+                    Page.page_number < page.page_number
+                ))
+                .order_by(Page.page_number)
+            )
+            prev_pages = prev_pages.scalars().all()
+            
+            if prev_pages:
+                last_page = prev_pages[-1]
+                page.audio_start_offset = (last_page.audio_start_offset or 0.0) + (last_page.audio_duration or 0.0)
+        
+        await session.commit()
+        print(f"Saved audio for page {page.page_number} - Duration: {duration:.2f}s, Offset: {page.audio_start_offset:.2f}s")
+
+async def get_book_by_hash(file_hash: str) -> Optional[Book]:
+    """Get book by file hash"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Book).where(Book.file_hash == file_hash)
+        )
+        return result.scalar_one_or_none()
+
+async def get_user_book_state_by_ids(user_id: str, book_id: str) -> Optional[UserBookState]:
+    """Get user book state by user_id and book_id"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(UserBookState).where(
+                and_(
+                    UserBookState.user_id == user_id,
+                    UserBookState.book_id == book_id
+                )
+            )
+        )
+        return result.scalar_one_or_none()

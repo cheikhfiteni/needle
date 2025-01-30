@@ -50,6 +50,7 @@ class Book(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     reference_string = Column(String, nullable=False)
     file_blob = Column(LargeBinary)
+    file_hash = Column(String, unique=True, index=True)  # SHA-256 hash of the file
     total_pages = Column(Integer, nullable=False)
     table_of_contents = Column(JSON)  # Dictionary of chapter -> page range, timestamp
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -67,9 +68,12 @@ class Page(Base):
     chapter = Column(String)
     paragraphed_text = Column(ARRAY(String), nullable=False)  # Array of paragraphs
     sentenced_text = Column(ARRAY(String), nullable=False)    # Array of sentences
-    audio_chunks = Column(JSON)
-    audio_timestamp = Column(Float, nullable=True)  
-    audio_duration = Column(Float, nullable=True)   
+    
+    # Audio related fields
+    audio_blob = Column(LargeBinary, nullable=True)  # Raw audio data
+    audio_start_offset = Column(Float, nullable=True)  # Start time in chapter
+    audio_duration = Column(Float, nullable=True)     # Duration of page audio
+    chapter_audio_offset = Column(Float, nullable=True)  # Start time in book
     
     # Vector search columns - will store as JSON if pgvector not available
     embedding = Vector(1536)  # OpenAI's embedding dimension
@@ -142,17 +146,35 @@ event.listen(
     DDL('CREATE EXTENSION IF NOT EXISTS vector;')
 )
 
-# Add this after all model definitions but before Base.metadata.create_all(engine)
+# First create a function to handle array to tsvector conversion
+create_array_to_tsvector = DDL("""
+    CREATE OR REPLACE FUNCTION pages_trigger_function() RETURNS trigger AS $$
+    BEGIN
+        NEW.text_search := to_tsvector('pg_catalog.english', array_to_string(NEW.paragraphed_text, ' '));
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+""")
+
+# Then create the trigger that uses this function
+create_trigger = DDL("""
+    CREATE TRIGGER tsvector_update 
+    BEFORE INSERT OR UPDATE ON pages
+    FOR EACH ROW 
+    EXECUTE FUNCTION pages_trigger_function();
+""")
+
+# Register both events
 event.listen(
-    Page.__table__,
+    Page.__table__, 
     'after_create',
-    DDL(
-        """
-        CREATE TRIGGER tsvector_update BEFORE INSERT OR UPDATE
-        ON pages FOR EACH ROW EXECUTE PROCEDURE
-        tsvector_update_trigger(text_search, 'pg_catalog.english', paragraphed_text)
-        """
-    )
+    create_array_to_tsvector.execute_if(dialect='postgresql')
+)
+
+event.listen(
+    Page.__table__, 
+    'after_create',
+    create_trigger.execute_if(dialect='postgresql')
 )
 
 Base.metadata.create_all(engine)

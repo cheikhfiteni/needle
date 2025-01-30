@@ -1,111 +1,101 @@
 from abc import ABC, abstractmethod
 import os
 import re
-from openai import OpenAI
-from sqlalchemy import select, and_
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.database import get_async_db, get_audio_chunk_for_timestamp
+from openai import AsyncOpenAI
+from app.db.database import get_audio_chunk_for_timestamp, update_reading_position
 from app.models.models import Page
+from collections import OrderedDict
 
 # Creating voices, synthesizing audio, diarization all done here.
 class SynthTranscriber(ABC):
     @abstractmethod
-    def synthesize_audio(self, page: Page) -> bytes:
+    def synthesize_page_audio(self, page: Page) -> bytes:
         pass
 
 # Actually managing the cursor position and plyaback interactions between
 # Narrator, Chatter, and client. Also calls the SynthTranscriber to get the audio a couple pages ahead.
 
 ### Important question to answer is whether pages are first class citizens or not
+
 class Narrator(ABC):
-    def __init__(self):
-        self.audio_buffer = {}  # Map of chunk sequence numbers to audio bytes
-        self.current_chunk = None
-        self.current_position = 0
-        self.buffer_size = 2  # Number of chunks to buffer ahead
-
     @abstractmethod
-    def narrate(self, current_position: float) -> str:
+    def load_audio_for_timestamp(self, timestamp: float) -> tuple[bytes, float]:
         pass
-
+    
     @abstractmethod
-    def interrupt(self, current_position: float) -> None:
+    def interrupt(self, timestamp: float, user_id: str) -> None:
         pass
 
-    async def load_audio(self, timestamp: float) -> bytes:
-        """Loads audio chunk for given timestamp and manages buffer"""
-        async with get_async_db() as db:
-            chunk, position = await get_audio_chunk_for_timestamp(db, self.book_id, timestamp)
-            
-            if not chunk:
-                raise ValueError("No audio chunk found for timestamp")
-                
-            if chunk.sequence_number not in self.audio_buffer:
-                # Load requested chunk
-                self.audio_buffer[chunk.sequence_number] = chunk.audio_blob
-                
-                # Pre-fetch next chunks
-                for i in range(1, self.buffer_size + 1):
-                    next_chunk = await db.execute(
-                        select(AudioChunk)
-                        .where(
-                            and_(
-                                AudioChunk.book_id == self.book_id,
-                                AudioChunk.sequence_number == chunk.sequence_number + i
-                            )
-                        )
-                    )
-                    next_chunk = next_chunk.scalar_one_or_none()
-                    if next_chunk:
-                        self.audio_buffer[next_chunk.sequence_number] = next_chunk.audio_blob
-                        
-                # Remove old chunks from buffer
-                keys_to_remove = [
-                    k for k in self.audio_buffer.keys() 
-                    if k < chunk.sequence_number - 1
-                ]
-                for k in keys_to_remove:
-                    del self.audio_buffer[k]
-            
-            self.current_chunk = chunk
-            self.current_position = position
-            
-            return self.audio_buffer[chunk.sequence_number]
+class ConcreteNarrator(Narrator):
+    def __init__(self, book_id: str):
+        self.book_id = book_id
+        self.chunk_size = 30  # seconds
+        self.buffer_size = 5  # number of chunks to keep in memory
+        self._audio_cache = OrderedDict()
 
-    @abstractmethod
-    def _go_to_nearest_sentence(self, current_position: float) -> None:
-        pass
+    async def load_audio_for_timestamp(self, timestamp: float) -> tuple[bytes, float]:
+        """Returns (audio_data, chunk_duration)"""
+        print(f"\nDEBUG: Loading audio for timestamp {timestamp}")
+        chunk_start = (timestamp // self.chunk_size) * self.chunk_size
+        print(f"DEBUG: Calculated chunk_start: {chunk_start}")
+        
+        if chunk_start in self._audio_cache:
+            print(f"DEBUG: Found chunk in cache")
+            # Move to end to mark as most recently used
+            self._audio_cache.move_to_end(chunk_start)
+            return self._audio_cache[chunk_start]
 
+        print(f"DEBUG: Chunk not in cache, fetching from database")
+        page, relative_position = await get_audio_chunk_for_timestamp(self.book_id, chunk_start)
+        if not page:
+            print(f"DEBUG: No page found with audio for timestamp {chunk_start}")
+            raise ValueError(f"No audio found for timestamp {chunk_start}")
 
-    ### These are methods that are used to control playback in the client, and not used by the Narrator
-    ### but doing tool use for this would be interesting (either to send to the frontend as just a seek, or prompt a audio load)
-    @abstractmethod
-    def rewind(self, duration: float) -> None:
-        pass
+        print(f"DEBUG: Got page audio with duration {page.audio_duration}")
 
-    @abstractmethod
-    def scrub(self, timestamp: float) -> None:
-        pass
+        # Remove oldest item if cache is full
+        if len(self._audio_cache) >= self.buffer_size:
+            print(f"DEBUG: Cache full, removing oldest item")
+            self._audio_cache.popitem(last=False)
+        
+        self._audio_cache[chunk_start] = (page.audio_blob, page.audio_duration)
+        print(f"DEBUG: Added audio to cache, returning audio data")
+        return page.audio_blob, page.audio_duration
 
-    @abstractmethod
-    def jump_to_timestamp(self, timestamp: float) -> None:
-        pass
+    async def get_current_position(self, timestamp: float) -> dict:
+        """Get current reading position information"""
+        page, relative_position = await get_audio_chunk_for_timestamp(self.book_id, timestamp)
+        if page:
+            return {
+                'page': page.page_number,
+                'timestamp': timestamp,
+                'total_duration': page.audio_duration
+            }
+        return None
 
-    @abstractmethod
-    def jump_to_page(self, page: Page) -> None:
-        pass
+    async def interrupt(self, timestamp: float, user_id: str) -> None:
+        """Handle interruption by updating user's book state"""
+        position = await self.get_current_position(timestamp)
+        if position:
+            await update_reading_position(user_id, self.book_id, position)
 
-    def resume(self) -> None:
-        pass
+    async def scrub(self, timestamp: float) -> bytes:
+        """Handle scrubbing to a new position"""
+        # Check if timestamp is in buffer
+        for buffer_timestamp, (audio, duration) in self._audio_cache.items():
+            if buffer_timestamp <= timestamp < buffer_timestamp + duration:
+                return audio
 
-    def stop(self) -> None:
-        pass
+        # If not in buffer, load new audio
+        audio_data, _ = await self.load_audio_for_timestamp(timestamp)
+        return audio_data
 
+ 
 # Honestly AI voice transcription is not very good, but will get better.
 # Licensing out human audio would still be the recommended byte source.
 class OpenAISynthTranscriber(SynthTranscriber):
     def __init__(self):
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.MAX_CHARS = 4096
 
     def _break_into_sentences(self, text: str) -> list[str]:
@@ -195,14 +185,33 @@ class OpenAISynthTranscriber(SynthTranscriber):
         unprocessed_chunks = page.paragraphed_text[::-1]
         return self._convert_paragraph_text_to_buffers(unprocessed_chunks)
 
-    def _convert_text_to_audio(self, text: str, voice: str = "alloy") -> bytes:
-        response = self.client.audio.speech.create(
+    async def _convert_text_to_audio(self, text: str, voice: str = "alloy") -> bytes:
+        response = await self.client.audio.speech.create(
             model="tts-1",
             input=text,
             voice=voice
         )
         return response.content
         
-    def synthesize_audio(self, page: Page):
-        text = self._convert_page_to_text(page)
-        return self._convert_text_to_audio(text)
+    async def synthesize_page_audio(self, page: Page):
+        buffers = self._convert_page_to_buffered_text(page)
+        audio_bytes = b""
+        for buffer in buffers:
+            audio_bytes += await self._convert_text_to_audio(buffer)
+        return audio_bytes
+    
+# Singleton instances
+_openai_synth = None
+_narrator = None
+
+def get_synth() -> OpenAISynthTranscriber:
+    global _openai_synth
+    if _openai_synth is None:
+        _openai_synth = OpenAISynthTranscriber()
+    return _openai_synth
+
+def get_narrator(book_id: str) -> Narrator:
+    global _narrator
+    if _narrator is None or _narrator.book_id != book_id:
+        _narrator = ConcreteNarrator(book_id)
+    return _narrator
