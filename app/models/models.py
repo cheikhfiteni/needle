@@ -53,7 +53,6 @@ class Book(Base):
     file_hash = Column(String, unique=True, index=True)  # SHA-256 hash of the file
     total_pages = Column(Integer, nullable=False)
     table_of_contents = Column(JSON)  # Dictionary of chapter -> page range, timestamp
-    audio_ready = Column(Boolean, default=False)  # Track if audio generation is complete
     created_at = Column(DateTime, default=datetime.utcnow)
     
     pages = relationship("Page", back_populates="book")

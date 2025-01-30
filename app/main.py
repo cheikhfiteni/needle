@@ -282,7 +282,7 @@ async def get_audio(
         print(f"\nDEBUG: Getting audio for book_id={book_id}, timestamp={timestamp}, user_id={current_user.id}")
         narrator = get_narrator(book_id)
         print(f"DEBUG: Got narrator instance: {narrator}")
-        audio_data = await narrator.load_audio_for_timestamp(timestamp)
+        audio_data, duration = await narrator.load_audio_for_timestamp(timestamp)
         print(f"DEBUG: Got audio data of length: {len(audio_data) if audio_data else 'None'}")
         
         if not audio_data:

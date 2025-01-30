@@ -216,32 +216,57 @@ async def update_reading_position(user_id: str, book_id: str, position: dict) ->
             await session.refresh(state)
         return state
 
-async def get_audio_chunk_for_timestamp(book_id: str, timestamp: float) -> tuple[Optional[AudioChunk], float]:
+async def get_audio_chunk_for_timestamp(book_id: str, timestamp: float) -> tuple[Optional[Page], float]:
     """
-    Gets the audio chunk and relative position for a given timestamp in a book
-    Returns (chunk, relative_position) tuple
+    Gets the page containing audio for a given timestamp in a book
+    Returns (page, relative_position) tuple
     """
-    print(f"\nDEBUG: Fetching audio chunk for book_id={book_id}, timestamp={timestamp}")
+    print(f"\nDEBUG: Fetching page audio for book_id={book_id}, timestamp={timestamp}")
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(AudioChunk).where(
+            select(Page).where(
                 and_(
-                    AudioChunk.book_id == book_id,
-                    AudioChunk.start_timestamp <= timestamp,
-                    AudioChunk.end_timestamp > timestamp
+                    Page.book_id == book_id,
+                    Page.audio_start_offset <= timestamp,
+                    (Page.audio_start_offset + Page.audio_duration) > timestamp
                 )
             )
         )
-        chunk = result.scalar_one_or_none()
-        print(f"DEBUG: Found chunk: {chunk is not None}")
+        page = result.scalar_one_or_none()
+        print(f"DEBUG: Found page with audio: {page is not None}")
         
-        if not chunk:
-            print("DEBUG: No chunk found in database")
+        if not page:
+            print("DEBUG: No page found with audio for this timestamp")
             return None, 0.0
             
-        relative_position = timestamp - chunk.start_timestamp
-        print(f"DEBUG: Returning chunk with relative_position={relative_position}")
-        return chunk, relative_position
+        relative_position = timestamp - page.audio_start_offset
+        print(f"DEBUG: Returning page with relative_position={relative_position}")
+        return page, relative_position
+
+async def create_audio_chunk(
+    book_id: str,
+    sequence_number: int,
+    start_page: int,
+    end_page: int,
+    start_timestamp: float,
+    end_timestamp: float,
+    audio_blob: bytes
+) -> AudioChunk:
+    """Create an audio chunk entry"""
+    async with AsyncSessionLocal() as session:
+        chunk = AudioChunk(
+            book_id=book_id,
+            sequence_number=sequence_number,
+            start_page=start_page,
+            end_page=end_page,
+            start_timestamp=start_timestamp,
+            end_timestamp=end_timestamp,
+            audio_blob=audio_blob
+        )
+        session.add(chunk)
+        await session.commit()
+        await session.refresh(chunk)
+        return chunk
 
 async def save_page_audio(audio_bytes: bytes, page_id: str, duration: float, chapter_offset: float = 0.0) -> None:
     """

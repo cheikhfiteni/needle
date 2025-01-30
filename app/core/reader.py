@@ -46,49 +46,49 @@ class ConcreteNarrator(Narrator):
             return self._audio_cache[chunk_start]
 
         print(f"DEBUG: Chunk not in cache, fetching from database")
-        chunk = await get_audio_chunk_for_timestamp(self.book_id, chunk_start)
-        if not chunk:
-            print(f"DEBUG: No audio chunk found in database for timestamp {chunk_start}")
-            raise ValueError(f"No audio chunk found for timestamp {chunk_start}")
+        page, relative_position = await get_audio_chunk_for_timestamp(self.book_id, chunk_start)
+        if not page:
+            print(f"DEBUG: No page found with audio for timestamp {chunk_start}")
+            raise ValueError(f"No audio found for timestamp {chunk_start}")
 
-        print(f"DEBUG: Got chunk from database with duration {chunk.duration if chunk else 'None'}")
+        print(f"DEBUG: Got page audio with duration {page.audio_duration}")
 
         # Remove oldest item if cache is full
         if len(self._audio_cache) >= self.buffer_size:
             print(f"DEBUG: Cache full, removing oldest item")
             self._audio_cache.popitem(last=False)
         
-        self._audio_cache[chunk_start] = (chunk.audio_data, chunk.duration)
-        print(f"DEBUG: Added chunk to cache, returning audio data")
-        return chunk.audio_data, chunk.duration
+        self._audio_cache[chunk_start] = (page.audio_blob, page.audio_duration)
+        print(f"DEBUG: Added audio to cache, returning audio data")
+        return page.audio_blob, page.audio_duration
 
     async def get_current_position(self, timestamp: float) -> dict:
         """Get current reading position information"""
-        chunk, _ = await get_audio_chunk_for_timestamp(self.book_id, timestamp)
-        if chunk:
+        page, relative_position = await get_audio_chunk_for_timestamp(self.book_id, timestamp)
+        if page:
             return {
-                'page': chunk.start_page,
+                'page': page.page_number,
                 'timestamp': timestamp,
-                'total_duration': chunk.duration
+                'total_duration': page.audio_duration
             }
         return None
 
     async def interrupt(self, timestamp: float, user_id: str) -> None:
         """Handle interruption by updating user's book state"""
-        position = await self.get_current_position()
+        position = await self.get_current_position(timestamp)
         if position:
             await update_reading_position(user_id, self.book_id, position)
 
     async def scrub(self, timestamp: float) -> bytes:
         """Handle scrubbing to a new position"""
         # Check if timestamp is in buffer
-        for buffer_timestamp, audio in self._audio_cache.items():
-            chunk_duration = len(audio) / 44100  # Assuming 44.1kHz sample rate
-            if buffer_timestamp <= timestamp < buffer_timestamp + chunk_duration:
+        for buffer_timestamp, (audio, duration) in self._audio_cache.items():
+            if buffer_timestamp <= timestamp < buffer_timestamp + duration:
                 return audio
 
         # If not in buffer, load new audio
-        return await self.load_audio_for_timestamp(timestamp)
+        audio_data, _ = await self.load_audio_for_timestamp(timestamp)
+        return audio_data
 
  
 # Honestly AI voice transcription is not very good, but will get better.
