@@ -2,9 +2,9 @@ from abc import ABC, abstractmethod
 import os
 import re
 from openai import AsyncOpenAI
-from sqlalchemy import select, and_
-from app.db.database import get_async_db, get_audio_chunk_for_timestamp, get_pages_from_book, update_reading_position
+from app.db.database import get_audio_chunk_for_timestamp, update_reading_position
 from app.models.models import Page
+from collections import OrderedDict
 
 # Creating voices, synthesizing audio, diarization all done here.
 class SynthTranscriber(ABC):
@@ -19,11 +19,7 @@ class SynthTranscriber(ABC):
 
 class Narrator(ABC):
     @abstractmethod
-    def load_audio_for_timestamp(self, timestamp: float) -> bytes:
-        pass
-
-    @abstractmethod
-    def get_current_position(self) -> dict:
+    def load_audio_for_timestamp(self, timestamp: float) -> tuple[bytes, float]:
         pass
     
     @abstractmethod
@@ -33,54 +29,49 @@ class Narrator(ABC):
 class ConcreteNarrator(Narrator):
     def __init__(self, book_id: str):
         self.book_id = book_id
-        self.audio_buffer = {}  # Map of timestamps to audio bytes
-        self.current_timestamp = 0
-        self.buffer_window = {
-            'back': 1,  # Pages to buffer backwards
-            'forward': 2  # Pages to buffer forwards
-        }
+        self.chunk_size = 30  # seconds
+        self.buffer_size = 5  # number of chunks to keep in memory
+        self._audio_cache = OrderedDict()
 
-    async def load_audio_for_timestamp(self, timestamp: float) -> bytes:
-        """Loads audio chunk for given timestamp and manages buffer"""
-        async with get_async_db() as db:
-            chunk, position = await get_audio_chunk_for_timestamp(db, self.book_id, timestamp)
-            
-            if not chunk:
-                raise ValueError("No audio chunk found for timestamp")
+    async def load_audio_for_timestamp(self, timestamp: float) -> tuple[bytes, float]:
+        """Returns (audio_data, chunk_duration)"""
+        print(f"\nDEBUG: Loading audio for timestamp {timestamp}")
+        chunk_start = (timestamp // self.chunk_size) * self.chunk_size
+        print(f"DEBUG: Calculated chunk_start: {chunk_start}")
+        
+        if chunk_start in self._audio_cache:
+            print(f"DEBUG: Found chunk in cache")
+            # Move to end to mark as most recently used
+            self._audio_cache.move_to_end(chunk_start)
+            return self._audio_cache[chunk_start]
 
-            # Update current position
-            self.current_timestamp = timestamp
-            
-            # Get surrounding pages
-            start_page = max(1, chunk.start_page - self.buffer_window['back'])
-            end_page = chunk.end_page + self.buffer_window['forward']
-            
-            pages = await get_pages_from_book(self.book_id, start_page, end_page - start_page + 1)
-            
-            # Build audio buffer
-            buffer_audio = b""
-            current_timestamp = 0
-            
-            for page in pages:
-                if page.audio_blob:
-                    self.audio_buffer[current_timestamp] = page.audio_blob
-                    if current_timestamp <= timestamp < current_timestamp + page.audio_duration:
-                        buffer_audio = page.audio_blob
-                    current_timestamp += page.audio_duration
+        print(f"DEBUG: Chunk not in cache, fetching from database")
+        chunk = await get_audio_chunk_for_timestamp(self.book_id, chunk_start)
+        if not chunk:
+            print(f"DEBUG: No audio chunk found in database for timestamp {chunk_start}")
+            raise ValueError(f"No audio chunk found for timestamp {chunk_start}")
 
-            return buffer_audio
+        print(f"DEBUG: Got chunk from database with duration {chunk.duration if chunk else 'None'}")
 
-    async def get_current_position(self) -> dict:
+        # Remove oldest item if cache is full
+        if len(self._audio_cache) >= self.buffer_size:
+            print(f"DEBUG: Cache full, removing oldest item")
+            self._audio_cache.popitem(last=False)
+        
+        self._audio_cache[chunk_start] = (chunk.audio_data, chunk.duration)
+        print(f"DEBUG: Added chunk to cache, returning audio data")
+        return chunk.audio_data, chunk.duration
+
+    async def get_current_position(self, timestamp: float) -> dict:
         """Get current reading position information"""
-        async with get_async_db() as db:
-            chunk, _ = await get_audio_chunk_for_timestamp(db, self.book_id, self.current_timestamp)
-            if chunk:
-                return {
-                    'page': chunk.start_page,
-                    'timestamp': self.current_timestamp,
-                    'total_duration': chunk.end_timestamp
-                }
-            return None
+        chunk, _ = await get_audio_chunk_for_timestamp(self.book_id, timestamp)
+        if chunk:
+            return {
+                'page': chunk.start_page,
+                'timestamp': timestamp,
+                'total_duration': chunk.duration
+            }
+        return None
 
     async def interrupt(self, timestamp: float, user_id: str) -> None:
         """Handle interruption by updating user's book state"""
@@ -91,7 +82,7 @@ class ConcreteNarrator(Narrator):
     async def scrub(self, timestamp: float) -> bytes:
         """Handle scrubbing to a new position"""
         # Check if timestamp is in buffer
-        for buffer_timestamp, audio in self.audio_buffer.items():
+        for buffer_timestamp, audio in self._audio_cache.items():
             chunk_duration = len(audio) / 44100  # Assuming 44.1kHz sample rate
             if buffer_timestamp <= timestamp < buffer_timestamp + chunk_duration:
                 return audio

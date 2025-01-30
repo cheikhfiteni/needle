@@ -221,6 +221,7 @@ async def get_audio_chunk_for_timestamp(book_id: str, timestamp: float) -> tuple
     Gets the audio chunk and relative position for a given timestamp in a book
     Returns (chunk, relative_position) tuple
     """
+    print(f"\nDEBUG: Fetching audio chunk for book_id={book_id}, timestamp={timestamp}")
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(AudioChunk).where(
@@ -232,11 +233,14 @@ async def get_audio_chunk_for_timestamp(book_id: str, timestamp: float) -> tuple
             )
         )
         chunk = result.scalar_one_or_none()
+        print(f"DEBUG: Found chunk: {chunk is not None}")
         
         if not chunk:
+            print("DEBUG: No chunk found in database")
             return None, 0.0
             
         relative_position = timestamp - chunk.start_timestamp
+        print(f"DEBUG: Returning chunk with relative_position={relative_position}")
         return chunk, relative_position
 
 async def save_page_audio(audio_bytes: bytes, page_id: str, duration: float, chapter_offset: float = 0.0) -> None:

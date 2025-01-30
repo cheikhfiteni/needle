@@ -1,6 +1,7 @@
 import { useAuth } from '../contexts/AuthContext'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { API_BASE_URL } from '../services/config'
+import { AudioStreamer } from '../components/AudioStreamer'
 
 type BookMetadata = {
   id: string
@@ -13,16 +14,11 @@ type BookMetadata = {
   }>
 }
 
-type AudioPlayerState = {
-  isPlaying: boolean
-  currentTime: number
-  duration: number
-  bufferedRanges: { start: number; end: number }[]
-}
-
-type BufferRange = {
-  start: number
-  end: number
+type Position = {
+  page: number
+  paragraph: number
+  sentence: number
+  timestamp: number
 }
 
 export function Dashboard() {
@@ -31,20 +27,30 @@ export function Dashboard() {
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [books, setBooks] = useState<BookMetadata[]>([])
   const [selectedBook, setSelectedBook] = useState<BookMetadata | null>(null)
-  const [currentPosition, setCurrentPosition] = useState<{
-    page: number;
-    paragraph: number;
-    sentence: number;
-    timestamp: number;
-  } | null>(null)
+  const [currentPosition, setCurrentPosition] = useState<Position | null>(null)
 
-  // Audio player state
-  const audioRef = useRef<HTMLAudioElement>(null)
-  const [playerState, setPlayerState] = useState<AudioPlayerState>({
-    isPlaying: false,
-    currentTime: 0,
-    duration: 0,
-    bufferedRanges: []
+  const {
+    controls: {
+      play,
+      pause,
+      seek,
+      isPlaying,
+      currentTime,
+      duration,
+      bufferedRanges,
+    },
+    AudioElement
+  } = AudioStreamer({
+    bookId: selectedBook?.id || '',
+    onTimeUpdate: (time) => {
+      if (currentPosition) {
+        setCurrentPosition({ ...currentPosition, timestamp: time })
+      }
+    },
+    onError: (error) => {
+      console.error('Audio error:', error)
+    },
+    initialTimestamp: currentPosition?.timestamp || 0
   })
 
   useEffect(() => {
@@ -63,54 +69,8 @@ export function Dashboard() {
     }
 
     fetchBooks()
-    const interval = setInterval(fetchBooks, 120000) // Refresh every 2 minutes
+    const interval = setInterval(fetchBooks, 120000)
     return () => clearInterval(interval)
-  }, [])
-
-  // Handle audio time updates
-  useEffect(() => {
-    const audio = audioRef.current
-    if (!audio) return
-
-    const handleTimeUpdate = () => {
-      setPlayerState(prev => ({
-        ...prev,
-        currentTime: audio.currentTime
-      }))
-    }
-
-    const handleDurationChange = () => {
-      setPlayerState(prev => ({
-        ...prev,
-        duration: audio.duration
-      }))
-    }
-
-    const handleProgress = () => {
-      const ranges: BufferRange[] = []
-      for (let i = 0; i < (audioRef.current?.buffered.length || 0); i++) {
-        if (audioRef.current?.buffered) {
-          ranges.push({
-            start: audioRef.current.buffered.start(i),
-            end: audioRef.current.buffered.end(i)
-          })
-        }
-      }
-      setPlayerState(prev => ({
-        ...prev,
-        bufferedRanges: ranges
-      }))
-    }
-
-    audio.addEventListener('timeupdate', handleTimeUpdate)
-    audio.addEventListener('durationchange', handleDurationChange)
-    audio.addEventListener('progress', handleProgress)
-
-    return () => {
-      audio.removeEventListener('timeupdate', handleTimeUpdate)
-      audio.removeEventListener('durationchange', handleDurationChange)
-      audio.removeEventListener('progress', handleProgress)
-    }
   }, [])
 
   const handleBookSelect = async (book: BookMetadata) => {
@@ -122,9 +82,6 @@ export function Dashboard() {
       if (response.ok) {
         const position = await response.json()
         setCurrentPosition(position)
-        if (audioRef.current) {
-          audioRef.current.currentTime = position.timestamp || 0
-        }
       }
     } catch (error) {
       console.error('Error fetching book position:', error)
@@ -163,72 +120,17 @@ export function Dashboard() {
     }
   }
 
-  // Handle audio playback controls
-  const handlePlayPause = async () => {
-    if (!selectedBook || !audioRef.current) return
-
-    try {
-      if (playerState.isPlaying) {
-        audioRef.current.pause()
-        await fetch(`${API_BASE_URL}/api/narration/interrupt`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({
-            book_id: selectedBook.id,
-            timestamp: audioRef.current.currentTime
-          })
-        })
-      } else {
-        // Instead of creating a blob URL, directly set the src to the streaming endpoint
-        audioRef.current.src = `${API_BASE_URL}/api/narration/audio/${selectedBook.id}?timestamp=${audioRef.current.currentTime}`
-        try {
-          await audioRef.current.play()
-        } catch (error) {
-          console.error('Playback failed:', error)
-          return
-        }
-      }
-      setPlayerState(prev => ({ ...prev, isPlaying: !prev.isPlaying }))
-    } catch (error) {
-      console.error('Error controlling playback:', error)
+  const handlePlayPause = () => {
+    if (isPlaying) {
+      pause()
+    } else {
+      play()
     }
   }
 
-  const handleScrub = async (newTime: number) => {
-    if (!selectedBook || !audioRef.current) return
-
-    try {
-      // Update the audio source to the new timestamp
-      audioRef.current.src = `${API_BASE_URL}/api/narration/audio/${selectedBook.id}?timestamp=${newTime}`
-      audioRef.current.currentTime = newTime
-      
-      if (playerState.isPlaying) {
-        try {
-          await audioRef.current.play()
-        } catch (error) {
-          console.error('Playback failed after scrub:', error)
-          setPlayerState(prev => ({ ...prev, isPlaying: false }))
-        }
-      }
-    } catch (error) {
-      console.error('Error scrubbing:', error)
-    }
+  const handleScrub = (newTime: number) => {
+    seek(newTime)
   }
-
-  // Add error handling for audio
-  useEffect(() => {
-    const audio = audioRef.current
-    if (!audio) return
-
-    const handleError = (e: Event) => {
-      console.error('Audio error:', e)
-      setPlayerState(prev => ({ ...prev, isPlaying: false }))
-    }
-
-    audio.addEventListener('error', handleError)
-    return () => audio.removeEventListener('error', handleError)
-  }, [])
 
   return (
     <div className="min-h-screen p-4">
@@ -281,53 +183,48 @@ export function Dashboard() {
           <section className="mb-8 p-6 bg-white rounded-lg shadow">
             <h2 className="text-xl font-semibold mb-4">Audio Player</h2>
             <div className="space-y-4">
-              <audio ref={audioRef} className="hidden" />
-              
-              {/* Progress bar */}
+              {AudioElement}
               <div className="relative h-2 bg-gray-200 rounded-full">
-                {/* Buffered ranges */}
-                {playerState.bufferedRanges.map((range, i) => (
+                {bufferedRanges.map((range, i) => (
                   <div
                     key={i}
                     className="absolute h-full bg-gray-400 rounded-full"
                     style={{
-                      left: `${(range.start / playerState.duration) * 100}%`,
-                      width: `${((range.end - range.start) / playerState.duration) * 100}%`
+                      left: `${(range.start / duration) * 100}%`,
+                      width: `${((range.end - range.start) / duration) * 100}%`
                     }}
                   />
                 ))}
-                {/* Progress */}
                 <div
                   className="absolute h-full bg-violet-500 rounded-full"
                   style={{
-                    width: `${(playerState.currentTime / playerState.duration) * 100}%`
+                    width: `${(currentTime / duration) * 100}%`
                   }}
                 />
                 <input
                   type="range"
                   min="0"
-                  max={playerState.duration}
-                  value={playerState.currentTime}
+                  max={duration}
+                  value={currentTime}
                   onChange={(e) => handleScrub(parseFloat(e.target.value))}
                   className="absolute w-full h-full opacity-0 cursor-pointer"
                 />
               </div>
 
-              {/* Controls */}
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-600">
-                  {formatTime(playerState.currentTime)} / {formatTime(playerState.duration)}
+                  {formatTime(currentTime)} / {formatTime(duration)}
                 </span>
                 <div className="flex gap-4">
                   <button
                     onClick={handlePlayPause}
                     className={`px-6 py-3 rounded-md font-medium ${
-                      playerState.isPlaying
+                      isPlaying
                         ? 'bg-red-500 hover:bg-red-600 text-white'
                         : 'bg-green-500 hover:bg-green-600 text-white'
                     }`}
                   >
-                    {playerState.isPlaying ? 'Pause' : 'Play'}
+                    {isPlaying ? 'Pause' : 'Play'}
                   </button>
                 </div>
               </div>
@@ -364,9 +261,9 @@ export function Dashboard() {
   )
 }
 
-// Helper function to format time
 function formatTime(seconds: number): string {
   const minutes = Math.floor(seconds / 60)
   const remainingSeconds = Math.floor(seconds % 60)
   return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
 } 
+

@@ -279,8 +279,15 @@ async def get_audio(
     current_user: User = Depends(get_current_user)
 ) -> StreamingResponse:
     try:
+        print(f"\nDEBUG: Getting audio for book_id={book_id}, timestamp={timestamp}, user_id={current_user.id}")
         narrator = get_narrator(book_id)
+        print(f"DEBUG: Got narrator instance: {narrator}")
         audio_data = await narrator.load_audio_for_timestamp(timestamp)
+        print(f"DEBUG: Got audio data of length: {len(audio_data) if audio_data else 'None'}")
+        
+        if not audio_data:
+            raise HTTPException(status_code=404, detail="No audio data found for this timestamp")
+            
         return StreamingResponse(
             io.BytesIO(audio_data),
             media_type="audio/mpeg",
@@ -290,6 +297,10 @@ async def get_audio(
             }
         )
     except Exception as e:
+        print(f"DEBUG: Error in get_audio: {str(e)}")
+        print(f"DEBUG: Error type: {type(e)}")
+        import traceback
+        print(f"DEBUG: Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/narration/interrupt")
